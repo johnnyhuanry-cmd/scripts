@@ -1,36 +1,44 @@
--- Headless Hub v4 | Christmas Edition (client-side only)
+-- Headless Hub v9 (client-side only)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
+local TextChatService = game:GetService("TextChatService")
 local Stats = game:GetService("Stats")
 
 local player = Players.LocalPlayer
 local parentGui = (gethui and gethui()) or game:GetService("CoreGui")
 local env = (getgenv and getgenv()) or _G
 
--- Clean up any previous copy
+-- Remove any previous copy
 if env.HeadlessHubUnload then pcall(env.HeadlessHubUnload) end
 pcall(function()
-    local old = parentGui:FindFirstChild("HeadlessHub")
-    if old then old:Destroy() end
+    for _, n in ipairs({ "HeadlessHub", "HeadlessHubTags" }) do
+        local old = parentGui:FindFirstChild(n)
+        if old then old:Destroy() end
+    end
 end)
 
 --------------------------------------------------------------------
--- Config (auto-saves if your executor supports writefile)
+-- Fonts (change these to restyle everything)
 --------------------------------------------------------------------
-local CONFIG_FILE = "HeadlessHub_v4.json"
+local FONT = Enum.Font.Ubuntu
+local FONT_TITLE = Enum.Font.Oswald
+
+--------------------------------------------------------------------
+-- Config (saves if your executor supports writefile)
+--------------------------------------------------------------------
+local CONFIG_FILE = "HeadlessHub_v9.json"
 local DEFAULTS = {
     headless = false, hideFace = true, hideAccessories = false,
+    invisible = false, invisLevel = 0.8,
     speedOn = false, speed = 32,
     jumpOn = false, jump = 80,
     infJump = false,
     fovOn = false, fov = 90,
-    santaHat = false, lights = true,
-    windowSnow = true, screenSnow = false,
-    snowAmount = 70, snowSpeed = 1, snowWind = 0,
-    festive = false, accent = "Candy Red", scale = 1, opacity = 1,
+    fpsTags = false, tagRange = 250,
+    accent = "Teal", scale = 1, opacity = 1,
     guiKey = "RightShift", headlessKey = "H",
 }
 local config = {}
@@ -61,39 +69,30 @@ end)
 -- Theme / helpers
 --------------------------------------------------------------------
 local THEME = {
-    side = Color3.fromRGB(14, 22, 40),
-    panel = Color3.fromRGB(26, 36, 56),
-    off = Color3.fromRGB(62, 72, 94),
-    text = Color3.fromRGB(245, 248, 255),
-    sub = Color3.fromRGB(160, 178, 202),
+    bg = Color3.fromRGB(18, 18, 21),
+    side = Color3.fromRGB(23, 23, 27),
+    panel = Color3.fromRGB(31, 31, 36),
+    hover = Color3.fromRGB(41, 41, 48),
+    line = Color3.fromRGB(52, 52, 60),
+    off = Color3.fromRGB(68, 68, 78),
+    text = Color3.fromRGB(236, 236, 240),
+    sub = Color3.fromRGB(138, 138, 150),
+    good = Color3.fromRGB(90, 210, 120),
+    warn = Color3.fromRGB(240, 190, 70),
+    bad = Color3.fromRGB(235, 85, 85),
 }
 
 local ACCENT_LIST = {
-    { "Candy Red", Color3.fromRGB(225, 50, 65) },
-    { "Pine Green", Color3.fromRGB(45, 175, 100) },
-    { "Gold", Color3.fromRGB(255, 196, 66) },
-    { "Frost", Color3.fromRGB(110, 200, 255) },
-    { "Berry", Color3.fromRGB(235, 90, 160) },
-    { "Silver", Color3.fromRGB(200, 210, 225) },
+    { "Teal", Color3.fromRGB(45, 190, 170) },
+    { "Blue", Color3.fromRGB(80, 140, 255) },
+    { "Orange", Color3.fromRGB(240, 140, 60) },
+    { "Rose", Color3.fromRGB(235, 90, 110) },
+    { "Lime", Color3.fromRGB(140, 200, 70) },
+    { "Violet", Color3.fromRGB(150, 110, 240) },
 }
 local function accentByName(name)
     for _, a in ipairs(ACCENT_LIST) do if a[1] == name then return a[2] end end
     return ACCENT_LIST[1][2]
-end
-
-local RED, GOLD, GREEN, ICE = ACCENT_LIST[1][2], ACCENT_LIST[3][2], ACCENT_LIST[2][2], ACCENT_LIST[4][2]
-local FESTIVE = { RED, GOLD, GREEN, ICE }
-local FESTIVE_SEQ = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, RED),
-    ColorSequenceKeypoint.new(0.33, GOLD),
-    ColorSequenceKeypoint.new(0.66, GREEN),
-    ColorSequenceKeypoint.new(1, RED),
-})
-local function festiveColor(t)
-    local n = #FESTIVE
-    local p = (t % 1) * n
-    local i = math.floor(p)
-    return FESTIVE[i % n + 1]:Lerp(FESTIVE[(i + 1) % n + 1], p - i)
 end
 
 local accent = accentByName(config.accent)
@@ -143,9 +142,10 @@ local keys = {
 }
 
 local visible, minimized = true, false
+local fps = 0
 
 --------------------------------------------------------------------
--- Core logic: headless, movement, camera
+-- Character look: headless + invisible (local only)
 --------------------------------------------------------------------
 local orig = setmetatable({}, { __mode = "k" })
 local HEAD_ATTACHMENTS = {
@@ -153,40 +153,47 @@ local HEAD_ATTACHMENTS = {
     FaceFrontAttachment = true, FaceCenterAttachment = true,
 }
 
-local function setTransparency(inst, hide)
-    if orig[inst] == nil then orig[inst] = inst.Transparency end
-    local target = hide and 1 or orig[inst]
-    if inst.Transparency ~= target then inst.Transparency = target end
-end
-
-local function headHandle(acc)
+local function isHeadAccessory(acc)
     local handle = acc:FindFirstChild("Handle")
-    if not handle then return nil end
+    if not handle then return false end
     for _, child in ipairs(handle:GetChildren()) do
-        if child:IsA("Attachment") and HEAD_ATTACHMENTS[child.Name] then return handle end
+        if child:IsA("Attachment") and HEAD_ATTACHMENTS[child.Name] then return true end
     end
-    return nil
+    return false
 end
 
-local function applyHeadless(forceOff)
+local function applyLook(forceOff)
     local char = player.Character
     if not char then return end
-    local hl = (not forceOff) and config.headless
     local head = char:FindFirstChild("Head")
-    if head then
-        setTransparency(head, hl)
-        for _, d in ipairs(head:GetChildren()) do
-            if d:IsA("Decal") then setTransparency(d, hl and config.hideFace) end
-        end
-    end
-    for _, acc in ipairs(char:GetChildren()) do
-        if acc:IsA("Accessory") then
-            local handle = headHandle(acc)
-            if handle then setTransparency(handle, (not forceOff) and config.hideAccessories) end
+    local hideHead = (not forceOff) and config.headless
+    local invisible = (not forceOff) and config.invisible
+    local hideAcc = (not forceOff) and config.hideAccessories
+
+    for _, d in ipairs(char:GetDescendants()) do
+        local isPart = d:IsA("BasePart")
+        if (isPart or d:IsA("Decal")) and d.Name ~= "HumanoidRootPart" then
+            if orig[d] == nil then orig[d] = d.Transparency end
+            local target = orig[d]
+            if invisible then target = math.max(target, config.invisLevel) end
+            if hideHead and head then
+                if d == head then
+                    target = 1
+                elseif d.Parent == head and config.hideFace and d:IsA("Decal") then
+                    target = 1
+                end
+            end
+            if hideAcc and isPart and d.Name == "Handle" and d.Parent:IsA("Accessory") and isHeadAccessory(d.Parent) then
+                target = 1
+            end
+            if d.Transparency ~= target then d.Transparency = target end
         end
     end
 end
 
+--------------------------------------------------------------------
+-- Movement and camera
+--------------------------------------------------------------------
 local function getHum()
     local char = player.Character
     return char and char:FindFirstChildOfClass("Humanoid")
@@ -196,7 +203,7 @@ local cam = workspace.CurrentCamera
 local origFov = cam and cam.FieldOfView or 70
 local speedApplied, jumpApplied, fovApplied = false, false, false
 
-connect(RunService.Stepped, function() applyHeadless(false) end)
+connect(RunService.Stepped, function() applyLook(false) end)
 
 connect(RunService.Heartbeat, function()
     local hum = getHum()
@@ -238,295 +245,317 @@ connect(UserInputService.JumpRequest, function()
 end)
 
 --------------------------------------------------------------------
--- Santa hat (built locally, only you can see it)
+-- Player finding + teleport
 --------------------------------------------------------------------
-local hatModel
-local function destroyHat()
-    if hatModel then pcall(function() hatModel:Destroy() end) hatModel = nil end
+local function findPlayer(query)
+    query = query:lower():gsub("^%s+", ""):gsub("%s+$", "")
+    if query == "" then return nil end
+    local list = Players:GetPlayers()
+    table.sort(list, function(a, b) return a.DisplayName:lower() < b.DisplayName:lower() end)
+
+    -- 1) exact display name or username
+    for _, p in ipairs(list) do
+        if p ~= player and (p.DisplayName:lower() == query or p.Name:lower() == query) then return p end
+    end
+    -- 2) display name starts with the text
+    for _, p in ipairs(list) do
+        if p ~= player and p.DisplayName:lower():sub(1, #query) == query then return p end
+    end
+    -- 3) username starts with the text
+    for _, p in ipairs(list) do
+        if p ~= player and p.Name:lower():sub(1, #query) == query then return p end
+    end
+    -- 4) text appears anywhere in either name
+    for _, p in ipairs(list) do
+        if p ~= player and (p.DisplayName:lower():find(query, 1, true) or p.Name:lower():find(query, 1, true)) then return p end
+    end
+    return nil
 end
 
-local function buildHat(char)
-    destroyHat()
-    local head = char and char:FindFirstChild("Head")
-    if not head then return end
+local notify -- defined with the GUI below
 
-    local s = math.max(head.Size.X, head.Size.Z) / 2
-    local top = head.Size.Y / 2
-    local base = head.CFrame * CFrame.new(0, top, 0) * CFrame.Angles(math.rad(-10), 0, 0)
-
-    local model = Instance.new("Model")
-    model.Name = "SantaHat"
-
-    local function piece(shape, size, y, color)
-        local p = Instance.new("Part")
-        p.Shape = shape
-        p.Size = size
-        p.Color = color
-        p.Material = Enum.Material.SmoothPlastic
-        p.CanCollide = false
-        p.CanTouch = false
-        p.CanQuery = false
-        p.Massless = true
-        p.CFrame = base * CFrame.new(0, y * s, 0) * CFrame.Angles(0, 0, math.rad(90))
-        p.Parent = model
-        local w = Instance.new("WeldConstraint")
-        w.Part0 = head
-        w.Part1 = p
-        w.Parent = p
+local function teleportToQuery(query)
+    local target = findPlayer(query)
+    if not target then
+        notify("No player matches \"" .. query .. "\"")
+        return
     end
-
-    local red = Color3.fromRGB(205, 30, 40)
-    local white = Color3.fromRGB(250, 250, 255)
-    local cyl = Enum.PartType.Cylinder
-    piece(cyl, Vector3.new(0.4 * s, 2.5 * s, 2.5 * s), 0.1, white)
-    piece(cyl, Vector3.new(0.8 * s, 2.0 * s, 2.0 * s), 0.7, red)
-    piece(cyl, Vector3.new(0.8 * s, 1.5 * s, 1.5 * s), 1.5, red)
-    piece(cyl, Vector3.new(0.8 * s, 1.0 * s, 1.0 * s), 2.3, red)
-    piece(Enum.PartType.Ball, Vector3.new(0.75 * s, 0.75 * s, 0.75 * s), 2.9, white)
-
-    model.Parent = char
-    hatModel = model
+    local myRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    local theirRoot = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+    if not (myRoot and theirRoot) then
+        notify(target.DisplayName .. " has no character loaded")
+        return
+    end
+    myRoot.CFrame = theirRoot.CFrame * CFrame.new(0, 1, 3)
+    notify("Teleported to " .. target.DisplayName)
 end
 
-local function refreshHat()
-    local char = player.Character
-    if config.santaHat and char then
-        if not hatModel or hatModel.Parent ~= char then buildHat(char) end
-    else
-        destroyHat()
+-- Chat command: !to <name>
+local lastMsg, lastTime = "", 0
+local function handleChat(msg)
+    if type(msg) ~= "string" then return end
+    local now = os.clock()
+    if msg == lastMsg and now - lastTime < 0.5 then return end
+    lastMsg, lastTime = msg, now
+
+    local arg = msg:match("^%s*![tT][oO]%s+(.-)%s*$")
+    if arg and arg ~= "" then
+        teleportToQuery(arg)
+    elseif msg:match("^%s*![tT][oO]%s*$") then
+        notify("Usage: !to <name>")
     end
 end
 
---------------------------------------------------------------------
--- Snow engine
---------------------------------------------------------------------
-local function createSnow(parent, maxCount, minSize, maxSize, w, h)
-    local layer = { flakes = {}, lastCount = -1 }
-    for i = 1, maxCount do
-        local depth = math.random()
-        local size = math.floor(minSize + (maxSize - minSize) * depth + 0.5)
-        local f = new("Frame", {
-            Size = UDim2.fromOffset(size, size), BackgroundColor3 = Color3.new(1, 1, 1),
-            BackgroundTransparency = 0.6 - depth * 0.45, BorderSizePixel = 0,
-            Visible = false, Parent = parent,
-        })
-        new("UICorner", { CornerRadius = UDim.new(0.5, 0), Parent = f })
-        layer.flakes[i] = {
-            gui = f, x = math.random() * w, y = math.random() * h, size = size, depth = depth,
-            speed = 14 + depth * 46, amp = 4 + math.random() * 14,
-            freq = 0.5 + math.random() * 1.2, phase = math.random() * 6.28,
-        }
-    end
-    return layer
-end
-
-local function stepSnow(layer, dt, t, w, h, count, speedMul, wind)
-    count = math.clamp(math.floor(count), 0, #layer.flakes)
-    if layer.lastCount ~= count then
-        layer.lastCount = count
-        for i, f in ipairs(layer.flakes) do f.gui.Visible = i <= count end
-    end
-    for i = 1, count do
-        local f = layer.flakes[i]
-        f.y += f.speed * speedMul * dt
-        f.x += wind * (0.4 + f.depth) * dt
-        if f.y > h + f.size then
-            f.y = -f.size
-            f.x = math.random() * w
+connect(player.Chatted, handleChat)
+pcall(function()
+    connect(TextChatService.MessageReceived, function(m)
+        if m.TextSource and m.TextSource.UserId == player.UserId then
+            handleChat(m.Text)
         end
-        if f.x > w + 20 then f.x -= (w + 40) elseif f.x < -20 then f.x += (w + 40) end
-        f.gui.Position = UDim2.fromOffset(f.x + math.sin(t * f.freq + f.phase) * f.amp, f.y)
+    end)
+end)
+
+--------------------------------------------------------------------
+-- FPS tags above players
+--------------------------------------------------------------------
+local tagFolder = new("Folder", { Name = "HeadlessHubTags", Parent = parentGui })
+local tags = {}
+
+local function fpsColor(v)
+    if v >= 45 then return THEME.good elseif v >= 25 then return THEME.warn end
+    return THEME.bad
+end
+
+local function removeTag(p)
+    local t = tags[p]
+    if t then
+        pcall(function() t.gui:Destroy() end)
+        tags[p] = nil
     end
 end
+
+local function clearTags()
+    for p in pairs(tags) do removeTag(p) end
+end
+
+local function ensureTag(p)
+    local char = p.Character
+    local head = char and char:FindFirstChild("Head")
+    local t = tags[p]
+    if t and head and t.gui.Adornee == head and t.gui.Parent then return t end
+    if t then removeTag(p) end
+    if not head then return nil end
+
+    local g = new("BillboardGui", {
+        Name = "Tag_" .. p.UserId, Adornee = head, AlwaysOnTop = true,
+        Size = UDim2.fromOffset(120, 34), StudsOffset = Vector3.new(0, 2.4, 0),
+        MaxDistance = config.tagRange, LightInfluence = 0, Parent = tagFolder,
+    })
+    local bg = new("Frame", {
+        Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = THEME.bg,
+        BackgroundTransparency = 0.2, BorderSizePixel = 0, Parent = g,
+    })
+    corner(bg, 6)
+    new("UIStroke", { Color = THEME.line, Thickness = 1, Parent = bg })
+    local nameL = new("TextLabel", {
+        Size = UDim2.new(1, -8, 0.5, 0), Position = UDim2.new(0, 4, 0, 1), BackgroundTransparency = 1,
+        Text = p.DisplayName, TextColor3 = THEME.text, Font = FONT, TextSize = 13,
+        TextTruncate = Enum.TextTruncate.AtEnd, Parent = bg,
+    })
+    local fpsL = new("TextLabel", {
+        Size = UDim2.new(1, -8, 0.5, -2), Position = UDim2.new(0, 4, 0.5, 0), BackgroundTransparency = 1,
+        Text = "-- FPS", TextColor3 = THEME.sub, Font = FONT, TextSize = 13, Parent = bg,
+    })
+    t = { gui = g, nameL = nameL, fpsL = fpsL, last = nil, count = 0, est = nil }
+    tags[p] = t
+    return t
+end
+
+connect(Players.PlayerRemoving, removeTag)
+
+local tagTimer = 0
+connect(RunService.RenderStepped, function(dt)
+    if not config.fpsTags then return end
+    tagTimer += dt
+
+    -- count how often each character's position updates for you
+    for p, t in pairs(tags) do
+        local root = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+        if root then
+            local cf = root.CFrame
+            if cf ~= t.last then
+                t.count += 1
+                t.last = cf
+            end
+        end
+    end
+
+    if tagTimer >= 1 then
+        local elapsed = tagTimer
+        tagTimer = 0
+        for p, t in pairs(tags) do
+            t.nameL.Text = p.DisplayName
+            if p == player then
+                t.fpsL.Text = fps .. " FPS"
+                t.fpsL.TextColor3 = fpsColor(fps)
+                t.fpsL.TextTransparency = 0
+            else
+                local active = t.count >= 4
+                if active then t.est = math.min(math.floor(t.count / elapsed + 0.5), 60) end
+                if t.est then
+                    t.fpsL.Text = "~" .. t.est .. " FPS"
+                    t.fpsL.TextColor3 = fpsColor(t.est)
+                    t.fpsL.TextTransparency = active and 0 or 0.5
+                else
+                    t.fpsL.Text = "-- FPS"
+                    t.fpsL.TextColor3 = THEME.sub
+                    t.fpsL.TextTransparency = 0
+                end
+            end
+            t.count = 0
+        end
+    end
+end)
+
+task.spawn(function()
+    while running do
+        task.wait(0.5)
+        if config.fpsTags then
+            for _, p in ipairs(Players:GetPlayers()) do ensureTag(p) end
+        elseif next(tags) then
+            clearTags()
+        end
+    end
+end)
 
 --------------------------------------------------------------------
 -- Root GUI
 --------------------------------------------------------------------
-local WIN_W, WIN_H, HEADER_H = 560, 380, 46
+local WIN_W, WIN_H, HEADER_H = 520, 360, 44
 local gui = new("ScreenGui", {
     Name = "HeadlessHub", ResetOnSpawn = false, IgnoreGuiInset = true,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling, Parent = parentGui,
 })
 
-local function screenSize()
-    local s = gui.AbsoluteSize
-    if s.X < 10 then
-        local c = workspace.CurrentCamera
-        s = c and c.ViewportSize or Vector2.new(1920, 1080)
-    end
-    return s
-end
-
--- Full-screen snow (created first so the window sits above it)
-local snowScreen = new("Frame", {
-    Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Visible = config.screenSnow, Parent = gui,
-})
-local sv = screenSize()
-local snowScreenLayer = createSnow(snowScreen, 100, 2, 6, sv.X, sv.Y)
-
--- Main window
 local main = new("Frame", {
     Size = UDim2.fromOffset(WIN_W, WIN_H),
     Position = UDim2.new(0.5, -WIN_W / 2, 0.5, -WIN_H / 2),
-    BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 1 - config.opacity,
+    BackgroundColor3 = THEME.bg, BackgroundTransparency = 1 - config.opacity,
     BorderSizePixel = 0, ClipsDescendants = true, Active = true, Parent = gui,
 })
-corner(main, 14)
-new("UIGradient", {
-    Color = ColorSequence.new(Color3.fromRGB(14, 24, 50), Color3.fromRGB(8, 42, 38)),
-    Rotation = 90, Parent = main,
-})
-local mainStroke = new("UIStroke", { Thickness = 2, Color = Color3.new(1, 1, 1), Parent = main })
-local strokeGrad = new("UIGradient", { Color = FESTIVE_SEQ, Parent = mainStroke })
+corner(main, 8)
+new("UIStroke", { Color = THEME.line, Thickness = 1, Parent = main })
 local uiScale = new("UIScale", { Scale = 0, Parent = main })
-
--- Window snow (behind everything in the window)
-local snowWin = new("Frame", {
-    Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Visible = config.windowSnow, Parent = main,
-})
-local snowWinLayer = createSnow(snowWin, 120, 2, 7, WIN_W, WIN_H)
 
 -- Header
 local header = new("Frame", {
     Size = UDim2.new(1, 0, 0, HEADER_H), BackgroundColor3 = THEME.side,
-    BackgroundTransparency = 0.15, BorderSizePixel = 0, Parent = main,
+    BorderSizePixel = 0, Parent = main,
 })
 local headerLine = new("Frame", {
-    Size = UDim2.new(1, 0, 0, 2), Position = UDim2.new(0, 0, 1, -2),
-    BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Parent = header,
+    Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 1, -1),
+    BackgroundColor3 = THEME.line, BorderSizePixel = 0, Parent = header,
 })
-new("UIGradient", { Color = FESTIVE_SEQ, Parent = headerLine })
-
+local dot = new("Frame", {
+    Size = UDim2.fromOffset(8, 8), Position = UDim2.new(0, 16, 0.5, -4), BorderSizePixel = 0, Parent = header,
+})
+corner(dot, 4)
+onAccent(function() dot.BackgroundColor3 = accent end)
 new("TextLabel", {
-    Size = UDim2.new(1, -120, 0, 24), Position = UDim2.new(0, 16, 0, 5),
-    BackgroundTransparency = 1, Text = "❄ HEADLESS HUB ❄", TextColor3 = THEME.text,
-    Font = Enum.Font.GothamBlack, TextSize = 17, TextXAlignment = Enum.TextXAlignment.Left, Parent = header,
+    Size = UDim2.new(0, 130, 1, 0), Position = UDim2.new(0, 32, 0, 0), BackgroundTransparency = 1,
+    Text = "Headless Hub", TextColor3 = THEME.text, Font = FONT_TITLE, TextSize = 20,
+    TextXAlignment = Enum.TextXAlignment.Left, Parent = header,
 })
-local subtitle = new("TextLabel", {
-    Size = UDim2.new(1, -120, 0, 14), Position = UDim2.new(0, 16, 0, 27),
-    BackgroundTransparency = 1, Text = "CHRISTMAS EDITION  •  v4", TextColor3 = THEME.sub,
-    Font = Enum.Font.GothamBold, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left, Parent = header,
+new("TextLabel", {
+    Size = UDim2.new(0, 40, 1, 0), Position = UDim2.new(0, 142, 0, 2), BackgroundTransparency = 1,
+    Text = "v9", TextColor3 = THEME.sub, Font = FONT, TextSize = 13,
+    TextXAlignment = Enum.TextXAlignment.Left, Parent = header,
 })
-onAccent(function() subtitle.TextColor3 = accent end)
 
-local function headerButton(text, xOffset, color)
+local function headerButton(text, xOffset, hoverColor)
     local b = new("TextButton", {
         Size = UDim2.fromOffset(26, 26), Position = UDim2.new(1, xOffset, 0.5, -13),
-        BackgroundColor3 = color, Text = text, TextColor3 = Color3.new(1, 1, 1),
-        Font = Enum.Font.GothamBold, TextSize = 14, AutoButtonColor = false, Parent = header,
+        BackgroundColor3 = THEME.panel, Text = text, TextColor3 = THEME.text,
+        Font = FONT, TextSize = 16, AutoButtonColor = false, Parent = header,
     })
     corner(b, 6)
-    b.MouseEnter:Connect(function() tween(b, 0.15, { BackgroundTransparency = 0.25 }) end)
-    b.MouseLeave:Connect(function() tween(b, 0.15, { BackgroundTransparency = 0 }) end)
+    b.MouseEnter:Connect(function() tween(b, 0.15, { BackgroundColor3 = hoverColor }) end)
+    b.MouseLeave:Connect(function() tween(b, 0.15, { BackgroundColor3 = THEME.panel }) end)
     return b
 end
-local minimizeBtn = headerButton("-", -68, Color3.fromRGB(70, 80, 105))
-local closeBtn = headerButton("X", -36, Color3.fromRGB(190, 55, 65))
+local minimizeBtn = headerButton("-", -68, THEME.hover)
+local closeBtn = headerButton("x", -36, Color3.fromRGB(190, 60, 70))
 
--- Sidebar + content
+-- Sidebar and content
 local sidebar = new("Frame", {
-    Size = UDim2.new(0, 124, 1, -HEADER_H), Position = UDim2.new(0, 0, 0, HEADER_H),
-    BackgroundColor3 = THEME.side, BackgroundTransparency = 0.35, BorderSizePixel = 0, Parent = main,
+    Size = UDim2.new(0, 128, 1, -HEADER_H), Position = UDim2.new(0, 0, 0, HEADER_H),
+    BackgroundColor3 = THEME.side, BorderSizePixel = 0, Parent = main,
 })
-new("UIListLayout", { Padding = UDim.new(0, 6), Parent = sidebar })
-new("UIPadding", { PaddingTop = UDim.new(0, 12), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8), Parent = sidebar })
+new("Frame", {
+    Size = UDim2.new(0, 1, 1, 0), Position = UDim2.new(1, -1, 0, 0),
+    BackgroundColor3 = THEME.line, BorderSizePixel = 0, Parent = sidebar,
+})
+new("UIListLayout", { Padding = UDim.new(0, 4), Parent = sidebar })
+new("UIPadding", { PaddingTop = UDim.new(0, 10), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 10), Parent = sidebar })
 local content = new("Frame", {
-    Size = UDim2.new(1, -124, 1, -HEADER_H - 10), Position = UDim2.new(0, 124, 0, HEADER_H),
+    Size = UDim2.new(1, -128, 1, -HEADER_H), Position = UDim2.new(0, 128, 0, HEADER_H),
     BackgroundTransparency = 1, Parent = main,
 })
 
--- Stats (FPS + ping)
+-- FPS / ping readout
 local statsLabel = new("TextLabel", {
-    Size = UDim2.new(0, 108, 0, 34), Position = UDim2.new(0, 10, 1, -58),
-    BackgroundTransparency = 1, Text = "FPS: --\nPing: --", TextColor3 = THEME.sub,
-    Font = Enum.Font.Gotham, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, Parent = main,
+    Size = UDim2.new(0, 108, 0, 32), Position = UDim2.new(0, 12, 1, -42),
+    BackgroundTransparency = 1, Text = "FPS --\nPing --", TextColor3 = THEME.sub,
+    Font = FONT, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, Parent = main,
 })
 local frames, last = 0, os.clock()
 connect(RunService.RenderStepped, function()
     frames += 1
     local now = os.clock()
     if now - last >= 0.5 then
+        fps = math.floor(frames / (now - last) + 0.5)
         local ping = "--"
-        pcall(function() ping = math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue()) .. "ms" end)
-        statsLabel.Text = "FPS: " .. math.floor(frames / (now - last)) .. "\nPing: " .. ping
+        pcall(function() ping = math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue()) .. " ms" end)
+        statsLabel.Text = "FPS " .. fps .. "\nPing " .. ping
         frames, last = 0, now
     end
 end)
-
--- Christmas lights across the header
-local lightsHolder = new("Frame", {
-    Size = UDim2.new(1, 0, 0, 16), Position = UDim2.new(0, 0, 0, HEADER_H - 2),
-    BackgroundTransparency = 1, Visible = config.lights, Parent = main,
-})
-new("Frame", {
-    Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 0, 3),
-    BackgroundColor3 = Color3.fromRGB(25, 70, 50), BorderSizePixel = 0, Parent = lightsHolder,
-})
-local LIGHT_COLORS = { RED, GOLD, GREEN, ICE }
-local bulbs = {}
-local BULB_COUNT = 24
-for i = 1, BULB_COUNT do
-    local x = (i - 0.5) / BULB_COUNT
-    local y = 4 + (i % 2) * 3
-    local color = LIGHT_COLORS[(i - 1) % #LIGHT_COLORS + 1]
-    local glow = new("Frame", {
-        Size = UDim2.fromOffset(16, 16), AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.new(x, 0, 0, y + 5), BackgroundColor3 = color,
-        BackgroundTransparency = 0.8, BorderSizePixel = 0, Parent = lightsHolder,
-    })
-    corner(glow, 8)
-    local bulb = new("Frame", {
-        Size = UDim2.fromOffset(7, 9), AnchorPoint = Vector2.new(0.5, 0),
-        Position = UDim2.new(x, 0, 0, y), BackgroundColor3 = color,
-        BorderSizePixel = 0, Parent = lightsHolder,
-    })
-    corner(bulb, 4)
-    bulbs[i] = { bulb = bulb, glow = glow }
-end
-
--- Snow drift along the bottom of the window
-local drift = new("Frame", { Size = UDim2.fromOffset(WIN_W, 20), Position = UDim2.fromOffset(0, WIN_H - 10),
-    BackgroundTransparency = 1, Parent = main })
-local DRIFT_N = 16
-for i = 1, DRIFT_N do
-    local size = math.random(28, 48)
-    local c = new("Frame", {
-        Size = UDim2.fromOffset(size, size), BackgroundColor3 = Color3.fromRGB(240, 246, 255),
-        Position = UDim2.fromOffset((i - 1) / (DRIFT_N - 1) * WIN_W - size / 2, math.random(-3, 3)),
-        BorderSizePixel = 0, Parent = drift,
-    })
-    corner(c, size / 2)
-end
-new("Frame", {
-    Size = UDim2.new(1, 0, 0, 12), Position = UDim2.fromOffset(0, 8),
-    BackgroundColor3 = Color3.fromRGB(240, 246, 255), BorderSizePixel = 0, Parent = drift,
-})
 
 --------------------------------------------------------------------
 -- Notifications
 --------------------------------------------------------------------
 local resetting = false
 local notifHolder = new("Frame", {
-    Size = UDim2.new(0, 260, 1, -20), Position = UDim2.new(1, -270, 0, 10),
+    Size = UDim2.new(0, 270, 1, -20), Position = UDim2.new(1, -280, 0, 10),
     BackgroundTransparency = 1, Parent = gui,
 })
 new("UIListLayout", { Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Bottom, Parent = notifHolder })
 
-local function notify(text)
+notify = function(text)
     if resetting then return end
-    local n = new("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = THEME.panel, BackgroundTransparency = 1,
-        Text = "❄  " .. text, TextColor3 = THEME.text, TextTransparency = 1,
-        Font = Enum.Font.GothamMedium, TextSize = 14, Parent = notifHolder,
+    local n = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 36), BackgroundColor3 = THEME.panel,
+        BackgroundTransparency = 1, BorderSizePixel = 0, Parent = notifHolder,
     })
-    corner(n, 8)
-    local s = new("UIStroke", { Color = accent, Thickness = 1.2, Transparency = 1, Parent = n })
-    tween(n, 0.25, { BackgroundTransparency = 0.05, TextTransparency = 0 })
-    tween(s, 0.25, { Transparency = 0 })
-    task.delay(2.2, function()
+    corner(n, 6)
+    local strip = new("Frame", {
+        Size = UDim2.new(0, 3, 1, -12), Position = UDim2.new(0, 6, 0, 6),
+        BackgroundColor3 = accent, BackgroundTransparency = 1, BorderSizePixel = 0, Parent = n,
+    })
+    corner(strip, 2)
+    local label = new("TextLabel", {
+        Size = UDim2.new(1, -24, 1, 0), Position = UDim2.new(0, 18, 0, 0), BackgroundTransparency = 1,
+        Text = text, TextColor3 = THEME.text, TextTransparency = 1, Font = FONT, TextSize = 14,
+        TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Parent = n,
+    })
+    tween(n, 0.25, { BackgroundTransparency = 0.05 })
+    tween(strip, 0.25, { BackgroundTransparency = 0 })
+    tween(label, 0.25, { TextTransparency = 0 })
+    task.delay(2.4, function()
         if not n.Parent then return end
-        tween(n, 0.3, { BackgroundTransparency = 1, TextTransparency = 1 })
-        tween(s, 0.3, { Transparency = 1 })
+        tween(n, 0.3, { BackgroundTransparency = 1 })
+        tween(strip, 0.3, { BackgroundTransparency = 1 })
+        tween(label, 0.3, { TextTransparency = 1 })
         task.wait(0.35)
         n:Destroy()
     end)
@@ -540,10 +569,10 @@ local currentTab
 
 local function createPage(name)
     local page = new("ScrollingFrame", {
-        Size = UDim2.new(1, -16, 1, -16), Position = UDim2.new(0, 8, 0, 12),
+        Size = UDim2.new(1, -16, 1, -20), Position = UDim2.new(0, 8, 0, 10),
         BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3,
-        CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
-        Visible = false, Parent = content,
+        ScrollBarImageColor3 = THEME.off, CanvasSize = UDim2.new(0, 0, 0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y, Visible = false, Parent = content,
     })
     new("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder, Parent = page })
     pages[name] = page
@@ -555,26 +584,42 @@ local function selectTab(name)
     currentTab = name
     for n, page in pairs(pages) do page.Visible = (n == name) end
     for n, b in pairs(tabButtons) do
-        local active = (n == name)
-        tween(b.button, 0.2, { BackgroundTransparency = active and 0.1 or 1, TextColor3 = active and THEME.text or THEME.sub })
-        tween(b.bar, 0.2, { Size = UDim2.new(0, 3, active and 0.6 or 0, 0) })
+        b.active = (n == name)
+        tween(b.button, 0.2, { BackgroundTransparency = b.active and 0 or 1 })
+        tween(b.label, 0.2, { TextColor3 = b.active and THEME.text or THEME.sub, Position = UDim2.new(0, b.active and 16 or 12, 0, 0) })
+        tween(b.bar, 0.2, { Size = UDim2.new(0, 3, b.active and 0.55 or 0, 0) })
     end
 end
 
-local function createTab(name, icon)
+local function createTab(name)
     local b = new("TextButton", {
         Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = THEME.panel, BackgroundTransparency = 1,
-        Text = "  " .. icon .. "  " .. name, TextColor3 = THEME.sub, Font = Enum.Font.GothamBold,
-        TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left, AutoButtonColor = false, Parent = sidebar,
+        Text = "", AutoButtonColor = false, Parent = sidebar,
     })
-    corner(b, 8)
+    corner(b, 6)
+    local label = new("TextLabel", {
+        Size = UDim2.new(1, -12, 1, 0), Position = UDim2.new(0, 12, 0, 0), BackgroundTransparency = 1,
+        Text = name, TextColor3 = THEME.sub, Font = FONT, TextSize = 14,
+        TextXAlignment = Enum.TextXAlignment.Left, Parent = b,
+    })
     local bar = new("Frame", {
         Size = UDim2.new(0, 3, 0, 0), Position = UDim2.new(0, 0, 0.5, 0),
         AnchorPoint = Vector2.new(0, 0.5), BorderSizePixel = 0, Parent = b,
     })
     corner(bar, 2)
     onAccent(function() bar.BackgroundColor3 = accent end)
-    tabButtons[name] = { button = b, bar = bar }
+    local entry = { button = b, label = label, bar = bar, active = false }
+    tabButtons[name] = entry
+    b.MouseEnter:Connect(function()
+        if entry.active then return end
+        tween(b, 0.15, { BackgroundTransparency = 0.6 })
+        tween(label, 0.15, { Position = UDim2.new(0, 17, 0, 0), TextColor3 = THEME.text })
+    end)
+    b.MouseLeave:Connect(function()
+        if entry.active then return end
+        tween(b, 0.15, { BackgroundTransparency = 1 })
+        tween(label, 0.15, { Position = UDim2.new(0, 12, 0, 0), TextColor3 = THEME.sub })
+    end)
     b.MouseButton1Click:Connect(function() selectTab(name) end)
     return createPage(name)
 end
@@ -587,30 +632,44 @@ local components = {}
 local function createSection(parent, order, text)
     new("TextLabel", {
         Size = UDim2.new(1, -6, 0, 18), BackgroundTransparency = 1, LayoutOrder = order,
-        Text = string.upper(text), TextColor3 = THEME.sub, Font = Enum.Font.GothamBold,
-        TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left, Parent = parent,
+        Text = string.upper(text), TextColor3 = THEME.sub, Font = FONT, TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left, Parent = parent,
     })
 end
 
 local function createRow(parent, order, height)
     local row = new("Frame", {
         Size = UDim2.new(1, -6, 0, height), BackgroundColor3 = THEME.panel,
-        BackgroundTransparency = 0.2, LayoutOrder = order, Parent = parent,
+        BorderSizePixel = 0, LayoutOrder = order, Parent = parent,
     })
-    corner(row, 8)
+    corner(row, 6)
+    local strip = new("Frame", {
+        Size = UDim2.new(0, 3, 0, 0), Position = UDim2.new(0, 0, 0.5, 0),
+        AnchorPoint = Vector2.new(0, 0.5), BorderSizePixel = 0, Parent = row,
+    })
+    corner(strip, 2)
+    onAccent(function() strip.BackgroundColor3 = accent end)
+    row.MouseEnter:Connect(function()
+        tween(row, 0.15, { BackgroundColor3 = THEME.hover })
+        tween(strip, 0.2, { Size = UDim2.new(0, 3, 0.6, 0) })
+    end)
+    row.MouseLeave:Connect(function()
+        tween(row, 0.15, { BackgroundColor3 = THEME.panel })
+        tween(strip, 0.2, { Size = UDim2.new(0, 3, 0, 0) })
+    end)
     return row
 end
 
 local function rowLabels(row, title, desc)
     new("TextLabel", {
-        Size = UDim2.new(1, -90, 0, 18), Position = UDim2.new(0, 14, 0, 8), BackgroundTransparency = 1,
-        Text = title, TextColor3 = THEME.text, Font = Enum.Font.GothamBold, TextSize = 14,
+        Size = UDim2.new(1, -100, 0, 18), Position = UDim2.new(0, 14, 0, 8), BackgroundTransparency = 1,
+        Text = title, TextColor3 = THEME.text, Font = FONT, TextSize = 15,
         TextXAlignment = Enum.TextXAlignment.Left, Parent = row,
     })
     if desc then
         new("TextLabel", {
-            Size = UDim2.new(1, -90, 0, 14), Position = UDim2.new(0, 14, 0, 28), BackgroundTransparency = 1,
-            Text = desc, TextColor3 = THEME.sub, Font = Enum.Font.Gotham, TextSize = 11,
+            Size = UDim2.new(1, -100, 0, 14), Position = UDim2.new(0, 14, 0, 28), BackgroundTransparency = 1,
+            Text = desc, TextColor3 = THEME.sub, Font = FONT, TextSize = 12,
             TextXAlignment = Enum.TextXAlignment.Left, Parent = row,
         })
     end
@@ -622,16 +681,19 @@ local function createToggle(parent, order, title, desc, key, callback)
     local value = config[key]
 
     local track = new("TextButton", {
-        Size = UDim2.fromOffset(46, 24), Position = UDim2.new(1, -60, 0.5, -12),
+        Size = UDim2.fromOffset(42, 22), Position = UDim2.new(1, -56, 0.5, -11),
         Text = "", AutoButtonColor = false, Parent = row,
     })
-    corner(track, 12)
+    corner(track, 11)
     local knob = new("Frame", {
-        Size = UDim2.fromOffset(18, 18), Position = value and UDim2.fromOffset(25, 3) or UDim2.fromOffset(3, 3),
-        BackgroundColor3 = Color3.new(1, 1, 1), Parent = track,
+        Size = UDim2.fromOffset(16, 16), Position = value and UDim2.fromOffset(23, 3) or UDim2.fromOffset(3, 3),
+        BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Parent = track,
     })
-    corner(knob, 9)
+    corner(knob, 8)
     onAccent(function() track.BackgroundColor3 = value and accent or THEME.off end)
+
+    track.MouseEnter:Connect(function() tween(knob, 0.12, { Size = UDim2.fromOffset(20, 16) }) end)
+    track.MouseLeave:Connect(function() tween(knob, 0.12, { Size = UDim2.fromOffset(16, 16) }) end)
 
     local api = {}
     function api.Set(v)
@@ -639,7 +701,7 @@ local function createToggle(parent, order, title, desc, key, callback)
         config[key] = v
         save()
         tween(track, 0.2, { BackgroundColor3 = v and accent or THEME.off })
-        tween(knob, 0.2, { Position = v and UDim2.fromOffset(25, 3) or UDim2.fromOffset(3, 3) }, Enum.EasingStyle.Back)
+        tween(knob, 0.2, { Position = v and UDim2.fromOffset(23, 3) or UDim2.fromOffset(3, 3) }, Enum.EasingStyle.Back)
         if callback then callback(v) end
     end
     function api.Get() return value end
@@ -654,12 +716,12 @@ local function createSlider(parent, order, title, key, min, max, decimals, callb
     local fmt = "%." .. decimals .. "f"
     local valueLabel = new("TextLabel", {
         Size = UDim2.new(0, 60, 0, 18), Position = UDim2.new(1, -74, 0, 8), BackgroundTransparency = 1,
-        Text = string.format(fmt, config[key]), TextColor3 = THEME.sub, Font = Enum.Font.GothamBold,
-        TextSize = 13, TextXAlignment = Enum.TextXAlignment.Right, Parent = row,
+        Text = string.format(fmt, config[key]), TextColor3 = THEME.sub, Font = FONT, TextSize = 14,
+        TextXAlignment = Enum.TextXAlignment.Right, Parent = row,
     })
     local track = new("TextButton", {
-        Size = UDim2.new(1, -28, 0, 6), Position = UDim2.new(0, 14, 0, 40),
-        BackgroundColor3 = THEME.off, Text = "", AutoButtonColor = false, Parent = row,
+        Size = UDim2.new(1, -28, 0, 5), Position = UDim2.new(0, 14, 0, 42),
+        BackgroundColor3 = THEME.off, Text = "", AutoButtonColor = false, BorderSizePixel = 0, Parent = row,
     })
     corner(track, 3)
     local alpha0 = (config[key] - min) / (max - min)
@@ -667,10 +729,13 @@ local function createSlider(parent, order, title, key, min, max, decimals, callb
     corner(fill, 3)
     onAccent(function() fill.BackgroundColor3 = accent end)
     local knob = new("Frame", {
-        Size = UDim2.fromOffset(14, 14), AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.new(alpha0, 0, 0.5, 0), BackgroundColor3 = Color3.new(1, 1, 1), Parent = track,
+        Size = UDim2.fromOffset(12, 12), AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(alpha0, 0, 0.5, 0), BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0, Parent = track,
     })
-    corner(knob, 7)
+    corner(knob, 6)
+    track.MouseEnter:Connect(function() tween(knob, 0.12, { Size = UDim2.fromOffset(16, 16) }) end)
+    track.MouseLeave:Connect(function() tween(knob, 0.12, { Size = UDim2.fromOffset(12, 12) }) end)
 
     local api = {}
     function api.Set(v)
@@ -709,24 +774,36 @@ local function createSlider(parent, order, title, key, min, max, decimals, callb
     return api
 end
 
+local function styleButton(b, w, h)
+    corner(b, 6)
+    onAccent(function() b.BackgroundColor3 = accent end)
+    b.MouseEnter:Connect(function()
+        tween(b, 0.15, { BackgroundColor3 = accent:Lerp(Color3.new(1, 1, 1), 0.18), Size = UDim2.fromOffset(w + 4, h + 2) })
+    end)
+    b.MouseLeave:Connect(function()
+        tween(b, 0.15, { BackgroundColor3 = accent, Size = UDim2.fromOffset(w, h) })
+    end)
+    b.MouseButton1Down:Connect(function() tween(b, 0.08, { Size = UDim2.fromOffset(w - 4, h - 2) }) end)
+    b.MouseButton1Up:Connect(function() tween(b, 0.1, { Size = UDim2.fromOffset(w + 4, h + 2) }) end)
+end
+
 local function createButton(parent, order, title, desc, btnText, callback)
     local row = createRow(parent, order, 52)
     rowLabels(row, title, desc)
     local b = new("TextButton", {
-        Size = UDim2.fromOffset(70, 28), Position = UDim2.new(1, -84, 0.5, -14),
-        Text = btnText, TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold,
-        TextSize = 12, AutoButtonColor = false, Parent = row,
+        Size = UDim2.fromOffset(84, 28), AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -14, 0.5, 0),
+        Text = btnText, TextColor3 = Color3.new(1, 1, 1), Font = FONT, TextSize = 13,
+        AutoButtonColor = false, BorderSizePixel = 0, Parent = row,
     })
-    corner(b, 6)
-    onAccent(function() b.BackgroundColor3 = accent end)
+    styleButton(b, 84, 28)
     b.MouseButton1Click:Connect(function() callback(b) end)
     return b
 end
 
 local listening = nil
-local function createKeybind(parent, order, title, desc, key, keyName, onChange)
-    local btn = createButton(parent, order, title, desc, keyName, function(b)
-        b.Text = "..."
+local function createKeybind(parent, order, title, desc, key, fallback, onChange)
+    local btn = createButton(parent, order, title, desc, config[key], function(b)
+        b.Text = "press a key"
         listening = function(code)
             b.Text = code.Name
             config[key] = code.Name
@@ -737,86 +814,87 @@ local function createKeybind(parent, order, title, desc, key, keyName, onChange)
     components[key] = { Set = function(name)
         config[key] = name
         btn.Text = name
-        onChange(keyFromName(name, Enum.KeyCode.H))
+        onChange(keyFromName(name, fallback))
     end }
     return btn
 end
 
-local function daysToChristmas()
-    local now = os.date("*t")
-    if now.month == 12 and now.day == 25 then return 0 end
-    local target = os.time({ year = now.year, month = 12, day = 25, hour = 0 })
-    if os.time() > target then
-        target = os.time({ year = now.year + 1, month = 12, day = 25, hour = 0 })
-    end
-    return math.ceil((target - os.time()) / 86400)
+local function createInput(parent, order, title, desc, placeholder, btnText, callback)
+    local row = createRow(parent, order, 88)
+    rowLabels(row, title, desc)
+    local box = new("TextBox", {
+        Size = UDim2.new(1, -118, 0, 28), Position = UDim2.new(0, 14, 0, 50),
+        BackgroundColor3 = THEME.bg, Text = "", PlaceholderText = placeholder,
+        PlaceholderColor3 = THEME.sub, TextColor3 = THEME.text, Font = FONT, TextSize = 14,
+        ClearTextOnFocus = false, TextXAlignment = Enum.TextXAlignment.Left, BorderSizePixel = 0, Parent = row,
+    })
+    corner(box, 6)
+    new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8), Parent = box })
+    local stroke = new("UIStroke", { Color = THEME.line, Thickness = 1, Parent = box })
+    box.Focused:Connect(function() tween(stroke, 0.15, { Color = accent }) end)
+    box.FocusLost:Connect(function() tween(stroke, 0.15, { Color = THEME.line }) end)
+
+    local b = new("TextButton", {
+        Size = UDim2.fromOffset(70, 28), AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 50),
+        Text = btnText, TextColor3 = Color3.new(1, 1, 1), Font = FONT, TextSize = 13,
+        AutoButtonColor = false, BorderSizePixel = 0, Parent = row,
+    })
+    styleButton(b, 70, 28)
+    local function submit() callback(box.Text) end
+    b.MouseButton1Click:Connect(submit)
+    box.FocusLost:Connect(function(enter) if enter then submit() end end)
 end
 
 --------------------------------------------------------------------
 -- Pages
 --------------------------------------------------------------------
-local mainPage = createTab("Main", "❄")
-local playerPage = createTab("Player", "▲")
-local xmasPage = createTab("Christmas", "★")
-local visualsPage = createTab("Visuals", "◆")
-local settingsPage = createTab("Settings", "⚙")
+local mainPage = createTab("Main")
+local playerPage = createTab("Player")
+local playersPage = createTab("Players")
+local visualsPage = createTab("Visuals")
+local settingsPage = createTab("Settings")
 
 -- Main
-do
-    local days = daysToChristmas()
-    local title
-    if days == 0 then title = "🎄 Merry Christmas!"
-    elseif days == 1 then title = "🎄 1 day until Christmas"
-    else title = "🎄 " .. days .. " days until Christmas" end
-    local row = createRow(mainPage, 0, 56)
-    rowLabels(row, title, "Happy holidays, " .. player.DisplayName .. "!")
-end
-createSection(mainPage, 1, "Head")
-createToggle(mainPage, 2, "Headless", "Hides your head (only you see it)", "headless", function(v)
-    notify("Headless: " .. (v and "ON" or "OFF"))
+createSection(mainPage, 0, "Head")
+createToggle(mainPage, 1, "Headless", "Hides your head (only you see it)", "headless", function(v)
+    notify("Headless " .. (v and "on" or "off"))
 end)
-createToggle(mainPage, 3, "Hide Face", "Also hides the face decal while headless", "hideFace")
-createToggle(mainPage, 4, "Hide Head Accessories", "Hats, hair and face accessories", "hideAccessories", function(v)
-    notify("Head accessories: " .. (v and "hidden" or "shown"))
+createToggle(mainPage, 2, "Hide Face", "Also hides the face while headless", "hideFace")
+createToggle(mainPage, 3, "Hide Head Accessories", "Hats, hair and face items", "hideAccessories")
+createSection(mainPage, 4, "Body")
+createToggle(mainPage, 5, "Invisible", "Makes your whole character see-through to you", "invisible", function(v)
+    notify("Invisible " .. (v and "on" or "off"))
 end)
+createSlider(mainPage, 6, "Invisible Level", "invisLevel", 0.3, 1, 2)
 
 -- Player
 createSection(playerPage, 0, "Movement")
 createToggle(playerPage, 1, "Speed Boost", "Custom walk speed", "speedOn", function(v)
-    notify("Speed boost: " .. (v and "ON" or "OFF"))
+    notify("Speed boost " .. (v and "on" or "off"))
 end)
 createSlider(playerPage, 2, "Walk Speed", "speed", 16, 150, 0)
 createToggle(playerPage, 3, "Jump Boost", "Custom jump power", "jumpOn", function(v)
-    notify("Jump boost: " .. (v and "ON" or "OFF"))
+    notify("Jump boost " .. (v and "on" or "off"))
 end)
 createSlider(playerPage, 4, "Jump Power", "jump", 50, 250, 0)
 createToggle(playerPage, 5, "Infinite Jump", "Jump again in mid-air", "infJump", function(v)
-    notify("Infinite jump: " .. (v and "ON" or "OFF"))
+    notify("Infinite jump " .. (v and "on" or "off"))
 end)
 createSection(playerPage, 6, "Camera")
 createToggle(playerPage, 7, "Custom FOV", "Override your field of view", "fovOn")
 createSlider(playerPage, 8, "Field of View", "fov", 40, 120, 0)
 
--- Christmas
-createSection(xmasPage, 0, "Decorations")
-createToggle(xmasPage, 1, "Santa Hat", "A hat on your head (only you see it)", "santaHat", function(v)
-    refreshHat()
-    notify("Santa hat: " .. (v and "ON" or "OFF"))
+-- Players
+createSection(playersPage, 0, "Teleport")
+createInput(playersPage, 1, "Go To Player", "Type part of a name, or use !to name in chat", "name...", "Go", teleportToQuery)
+createSection(playersPage, 2, "Tags")
+createToggle(playersPage, 3, "FPS Tags", "Show an FPS tag above every player", "fpsTags", function(v)
+    if not v then clearTags() end
+    notify("FPS tags " .. (v and "on" or "off"))
 end)
-createToggle(xmasPage, 2, "Christmas Lights", "Twinkling lights on the window", "lights", function(v)
-    lightsHolder.Visible = v
+createSlider(playersPage, 4, "Tag Range", "tagRange", 50, 1000, 0, function(v)
+    for _, t in pairs(tags) do t.gui.MaxDistance = v end
 end)
-createSection(xmasPage, 3, "Snow")
-createToggle(xmasPage, 4, "Window Snow", "Snow falling inside the GUI", "windowSnow", function(v)
-    snowWin.Visible = v
-end)
-createToggle(xmasPage, 5, "Screen Snow", "Snow falling across your whole screen", "screenSnow", function(v)
-    snowScreen.Visible = v
-    notify("Screen snow: " .. (v and "ON" or "OFF"))
-end)
-createSlider(xmasPage, 6, "Snow Amount", "snowAmount", 10, 120, 0)
-createSlider(xmasPage, 7, "Snow Speed", "snowSpeed", 0.2, 3, 1)
-createSlider(xmasPage, 8, "Wind", "snowWind", -60, 60, 0)
 
 -- Visuals
 createSection(visualsPage, 0, "Accent Color")
@@ -828,28 +906,27 @@ new("UIListLayout", {
 })
 for _, a in ipairs(ACCENT_LIST) do
     local name, color = a[1], a[2]
-    local sw = new("TextButton", { Size = UDim2.fromOffset(32, 32), BackgroundColor3 = color, Text = "", AutoButtonColor = false, Parent = swatchRow })
-    corner(sw, 16)
+    local sw = new("TextButton", {
+        Size = UDim2.fromOffset(30, 30), BackgroundColor3 = color, Text = "",
+        AutoButtonColor = false, BorderSizePixel = 0, Parent = swatchRow,
+    })
+    corner(sw, 6)
     sw.MouseEnter:Connect(function() tween(sw, 0.15, { Size = UDim2.fromOffset(36, 36) }) end)
-    sw.MouseLeave:Connect(function() tween(sw, 0.15, { Size = UDim2.fromOffset(32, 32) }) end)
+    sw.MouseLeave:Connect(function() tween(sw, 0.15, { Size = UDim2.fromOffset(30, 30) }) end)
     sw.MouseButton1Click:Connect(function()
         config.accent = name
         save()
-        if components.festive and components.festive.Get() then components.festive.Set(false) end
         setAccent(color)
-        notify("Theme: " .. name)
+        notify("Accent: " .. name)
     end)
 end
-createToggle(visualsPage, 2, "Festive Colors", "Cycles red, gold, green and ice", "festive", function(v)
-    if not v then setAccent(accentByName(config.accent)) end
-end)
-createSection(visualsPage, 3, "Window")
-createSlider(visualsPage, 4, "UI Scale", "scale", 0.7, 1.4, 2, function(v) uiScale.Scale = v end)
-createSlider(visualsPage, 5, "Window Opacity", "opacity", 0.4, 1, 2, function(v)
+createSection(visualsPage, 2, "Window")
+createSlider(visualsPage, 3, "UI Scale", "scale", 0.7, 1.4, 2, function(v) uiScale.Scale = v end)
+createSlider(visualsPage, 4, "Window Opacity", "opacity", 0.4, 1, 2, function(v)
     main.BackgroundTransparency = 1 - v
 end)
 
--- Show / hide logic
+-- Show / hide
 local function setVisible(v)
     visible = v
     if v then
@@ -865,8 +942,9 @@ end
 local function unload()
     running = false
     if writefile then pcall(function() writefile(CONFIG_FILE, HttpService:JSONEncode(config)) end) end
-    applyHeadless(true)
-    destroyHat()
+    applyLook(true)
+    clearTags()
+    pcall(function() tagFolder:Destroy() end)
     local hum = getHum()
     if hum then
         if speedApplied then hum.WalkSpeed = 16 end
@@ -881,9 +959,8 @@ env.HeadlessHubUnload = unload
 
 -- Settings
 createSection(settingsPage, 0, "Keybinds")
-createKeybind(settingsPage, 1, "GUI Key", "Show / hide the GUI", "guiKey", keys.gui.Name, function(code) keys.gui = code end)
-createKeybind(settingsPage, 2, "Headless Key", "Quick toggle headless", "headlessKey", keys.headless.Name, function(code) keys.headless = code end)
-
+createKeybind(settingsPage, 1, "GUI Key", "Show or hide the window", "guiKey", Enum.KeyCode.RightShift, function(code) keys.gui = code end)
+createKeybind(settingsPage, 2, "Headless Key", "Quick toggle headless", "headlessKey", Enum.KeyCode.H, function(code) keys.headless = code end)
 createSection(settingsPage, 3, "Manage")
 createButton(settingsPage, 4, "Reset", "Restore all default settings", "Reset", function()
     resetting = true
@@ -895,7 +972,7 @@ createButton(settingsPage, 4, "Reset", "Restore all default settings", "Reset", 
     resetting = false
     notify("Everything reset")
 end)
-createButton(settingsPage, 5, "Unload", "Restore everything and remove GUI", "Unload", unload)
+createButton(settingsPage, 5, "Unload", "Restore everything and remove the GUI", "Unload", unload)
 
 selectTab("Main")
 
@@ -932,14 +1009,16 @@ connect(UserInputService.InputBegan, function(input, processed)
     end
 end)
 
--- Floating snowflake button (mobile / forgot the key)
+-- Small floating button (mobile / forgot the key)
 local fab = new("TextButton", {
-    Size = UDim2.fromOffset(44, 44), Position = UDim2.new(0, 14, 0.5, -22),
-    Text = "❄", TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBlack,
-    TextSize = 22, AutoButtonColor = false, Parent = gui,
+    Size = UDim2.fromOffset(40, 40), Position = UDim2.new(0, 14, 0.5, -20),
+    Text = "HH", TextColor3 = Color3.new(1, 1, 1), Font = FONT_TITLE, TextSize = 16,
+    AutoButtonColor = false, BorderSizePixel = 0, Parent = gui,
 })
-corner(fab, 22)
+corner(fab, 8)
 onAccent(function() fab.BackgroundColor3 = accent end)
+fab.MouseEnter:Connect(function() tween(fab, 0.15, { Size = UDim2.fromOffset(44, 44) }) end)
+fab.MouseLeave:Connect(function() tween(fab, 0.15, { Size = UDim2.fromOffset(40, 40) }) end)
 fab.MouseButton1Click:Connect(function() setVisible(not visible) end)
 
 --------------------------------------------------------------------
@@ -961,47 +1040,6 @@ connect(UserInputService.InputChanged, function(input)
     end
 end)
 
---------------------------------------------------------------------
--- Visual loop: snow, lights, border, festive colors, hat watchdog
---------------------------------------------------------------------
-local t, festiveAcc, hatAcc = 0, 0, 0
-connect(RunService.Heartbeat, function(dt)
-    t += dt
-
-    if config.windowSnow and visible and not minimized then
-        stepSnow(snowWinLayer, dt, t, WIN_W, WIN_H, config.snowAmount, config.snowSpeed, config.snowWind)
-    end
-    if config.screenSnow then
-        local s = screenSize()
-        stepSnow(snowScreenLayer, dt, t, s.X, s.Y, math.min(config.snowAmount, 100), config.snowSpeed, config.snowWind)
-    end
-
-    if visible then
-        strokeGrad.Rotation = (t * 50) % 360
-        if config.lights then
-            for i, b in ipairs(bulbs) do
-                local v = 0.5 + 0.5 * math.sin(t * 2.6 + i * 1.3)
-                b.bulb.BackgroundTransparency = 0.5 * (1 - v)
-                b.glow.BackgroundTransparency = 0.88 - 0.4 * v
-            end
-        end
-    end
-
-    if config.festive then
-        festiveAcc += dt
-        if festiveAcc >= 0.05 then
-            festiveAcc = 0
-            setAccent(festiveColor(t * 0.12))
-        end
-    end
-
-    hatAcc += dt
-    if hatAcc >= 0.5 then
-        hatAcc = 0
-        refreshHat()
-    end
-end)
-
--- Intro animation
-tween(uiScale, 0.5, { Scale = config.scale }, Enum.EasingStyle.Back)
-task.delay(0.6, function() notify("Merry Christmas, " .. player.DisplayName .. "!") end)
+-- Intro
+tween(uiScale, 0.4, { Scale = config.scale }, Enum.EasingStyle.Back)
+task.delay(0.5, function() notify("Headless Hub v9 loaded") end)
