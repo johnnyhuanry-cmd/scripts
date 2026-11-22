@@ -1,4 +1,4 @@
--- Headless Hub v3 (client-side only)
+-- Headless Hub v4 | Christmas Edition (client-side only)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -8,7 +8,10 @@ local Stats = game:GetService("Stats")
 
 local player = Players.LocalPlayer
 local parentGui = (gethui and gethui()) or game:GetService("CoreGui")
+local env = (getgenv and getgenv()) or _G
 
+-- Clean up any previous copy
+if env.HeadlessHubUnload then pcall(env.HeadlessHubUnload) end
 pcall(function()
     local old = parentGui:FindFirstChild("HeadlessHub")
     if old then old:Destroy() end
@@ -17,14 +20,17 @@ end)
 --------------------------------------------------------------------
 -- Config (auto-saves if your executor supports writefile)
 --------------------------------------------------------------------
-local CONFIG_FILE = "HeadlessHub_v3.json"
+local CONFIG_FILE = "HeadlessHub_v4.json"
 local DEFAULTS = {
     headless = false, hideFace = true, hideAccessories = false,
     speedOn = false, speed = 32,
     jumpOn = false, jump = 80,
     infJump = false,
     fovOn = false, fov = 90,
-    rainbow = false, accent = "Purple", scale = 1, opacity = 1,
+    santaHat = false, lights = true,
+    windowSnow = true, screenSnow = false,
+    snowAmount = 70, snowSpeed = 1, snowWind = 0,
+    festive = false, accent = "Candy Red", scale = 1, opacity = 1,
     guiKey = "RightShift", headlessKey = "H",
 }
 local config = {}
@@ -55,25 +61,39 @@ end)
 -- Theme / helpers
 --------------------------------------------------------------------
 local THEME = {
-    bg = Color3.fromRGB(16, 16, 22),
-    side = Color3.fromRGB(21, 21, 29),
-    panel = Color3.fromRGB(28, 28, 38),
-    off = Color3.fromRGB(58, 58, 72),
-    text = Color3.fromRGB(240, 240, 248),
-    sub = Color3.fromRGB(150, 150, 170),
+    side = Color3.fromRGB(14, 22, 40),
+    panel = Color3.fromRGB(26, 36, 56),
+    off = Color3.fromRGB(62, 72, 94),
+    text = Color3.fromRGB(245, 248, 255),
+    sub = Color3.fromRGB(160, 178, 202),
 }
 
 local ACCENT_LIST = {
-    { "Purple", Color3.fromRGB(110, 100, 255) },
-    { "Blue", Color3.fromRGB(60, 150, 255) },
-    { "Green", Color3.fromRGB(50, 200, 110) },
-    { "Red", Color3.fromRGB(235, 70, 80) },
-    { "Pink", Color3.fromRGB(240, 90, 180) },
-    { "Orange", Color3.fromRGB(255, 150, 50) },
+    { "Candy Red", Color3.fromRGB(225, 50, 65) },
+    { "Pine Green", Color3.fromRGB(45, 175, 100) },
+    { "Gold", Color3.fromRGB(255, 196, 66) },
+    { "Frost", Color3.fromRGB(110, 200, 255) },
+    { "Berry", Color3.fromRGB(235, 90, 160) },
+    { "Silver", Color3.fromRGB(200, 210, 225) },
 }
 local function accentByName(name)
     for _, a in ipairs(ACCENT_LIST) do if a[1] == name then return a[2] end end
     return ACCENT_LIST[1][2]
+end
+
+local RED, GOLD, GREEN, ICE = ACCENT_LIST[1][2], ACCENT_LIST[3][2], ACCENT_LIST[2][2], ACCENT_LIST[4][2]
+local FESTIVE = { RED, GOLD, GREEN, ICE }
+local FESTIVE_SEQ = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, RED),
+    ColorSequenceKeypoint.new(0.33, GOLD),
+    ColorSequenceKeypoint.new(0.66, GREEN),
+    ColorSequenceKeypoint.new(1, RED),
+})
+local function festiveColor(t)
+    local n = #FESTIVE
+    local p = (t % 1) * n
+    local i = math.floor(p)
+    return FESTIVE[i % n + 1]:Lerp(FESTIVE[(i + 1) % n + 1], p - i)
 end
 
 local accent = accentByName(config.accent)
@@ -122,8 +142,10 @@ local keys = {
     headless = keyFromName(config.headlessKey, Enum.KeyCode.H),
 }
 
+local visible, minimized = true, false
+
 --------------------------------------------------------------------
--- Core logic
+-- Core logic: headless, movement, camera
 --------------------------------------------------------------------
 local orig = setmetatable({}, { __mode = "k" })
 local HEAD_ATTACHMENTS = {
@@ -216,33 +238,176 @@ connect(UserInputService.JumpRequest, function()
 end)
 
 --------------------------------------------------------------------
+-- Santa hat (built locally, only you can see it)
+--------------------------------------------------------------------
+local hatModel
+local function destroyHat()
+    if hatModel then pcall(function() hatModel:Destroy() end) hatModel = nil end
+end
+
+local function buildHat(char)
+    destroyHat()
+    local head = char and char:FindFirstChild("Head")
+    if not head then return end
+
+    local s = math.max(head.Size.X, head.Size.Z) / 2
+    local top = head.Size.Y / 2
+    local base = head.CFrame * CFrame.new(0, top, 0) * CFrame.Angles(math.rad(-10), 0, 0)
+
+    local model = Instance.new("Model")
+    model.Name = "SantaHat"
+
+    local function piece(shape, size, y, color)
+        local p = Instance.new("Part")
+        p.Shape = shape
+        p.Size = size
+        p.Color = color
+        p.Material = Enum.Material.SmoothPlastic
+        p.CanCollide = false
+        p.CanTouch = false
+        p.CanQuery = false
+        p.Massless = true
+        p.CFrame = base * CFrame.new(0, y * s, 0) * CFrame.Angles(0, 0, math.rad(90))
+        p.Parent = model
+        local w = Instance.new("WeldConstraint")
+        w.Part0 = head
+        w.Part1 = p
+        w.Parent = p
+    end
+
+    local red = Color3.fromRGB(205, 30, 40)
+    local white = Color3.fromRGB(250, 250, 255)
+    local cyl = Enum.PartType.Cylinder
+    piece(cyl, Vector3.new(0.4 * s, 2.5 * s, 2.5 * s), 0.1, white)
+    piece(cyl, Vector3.new(0.8 * s, 2.0 * s, 2.0 * s), 0.7, red)
+    piece(cyl, Vector3.new(0.8 * s, 1.5 * s, 1.5 * s), 1.5, red)
+    piece(cyl, Vector3.new(0.8 * s, 1.0 * s, 1.0 * s), 2.3, red)
+    piece(Enum.PartType.Ball, Vector3.new(0.75 * s, 0.75 * s, 0.75 * s), 2.9, white)
+
+    model.Parent = char
+    hatModel = model
+end
+
+local function refreshHat()
+    local char = player.Character
+    if config.santaHat and char then
+        if not hatModel or hatModel.Parent ~= char then buildHat(char) end
+    else
+        destroyHat()
+    end
+end
+
+--------------------------------------------------------------------
+-- Snow engine
+--------------------------------------------------------------------
+local function createSnow(parent, maxCount, minSize, maxSize, w, h)
+    local layer = { flakes = {}, lastCount = -1 }
+    for i = 1, maxCount do
+        local depth = math.random()
+        local size = math.floor(minSize + (maxSize - minSize) * depth + 0.5)
+        local f = new("Frame", {
+            Size = UDim2.fromOffset(size, size), BackgroundColor3 = Color3.new(1, 1, 1),
+            BackgroundTransparency = 0.6 - depth * 0.45, BorderSizePixel = 0,
+            Visible = false, Parent = parent,
+        })
+        new("UICorner", { CornerRadius = UDim.new(0.5, 0), Parent = f })
+        layer.flakes[i] = {
+            gui = f, x = math.random() * w, y = math.random() * h, size = size, depth = depth,
+            speed = 14 + depth * 46, amp = 4 + math.random() * 14,
+            freq = 0.5 + math.random() * 1.2, phase = math.random() * 6.28,
+        }
+    end
+    return layer
+end
+
+local function stepSnow(layer, dt, t, w, h, count, speedMul, wind)
+    count = math.clamp(math.floor(count), 0, #layer.flakes)
+    if layer.lastCount ~= count then
+        layer.lastCount = count
+        for i, f in ipairs(layer.flakes) do f.gui.Visible = i <= count end
+    end
+    for i = 1, count do
+        local f = layer.flakes[i]
+        f.y += f.speed * speedMul * dt
+        f.x += wind * (0.4 + f.depth) * dt
+        if f.y > h + f.size then
+            f.y = -f.size
+            f.x = math.random() * w
+        end
+        if f.x > w + 20 then f.x -= (w + 40) elseif f.x < -20 then f.x += (w + 40) end
+        f.gui.Position = UDim2.fromOffset(f.x + math.sin(t * f.freq + f.phase) * f.amp, f.y)
+    end
+end
+
+--------------------------------------------------------------------
 -- Root GUI
 --------------------------------------------------------------------
-local WIN_W, WIN_H = 540, 360
-local gui = new("ScreenGui", { Name = "HeadlessHub", ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, Parent = parentGui })
+local WIN_W, WIN_H, HEADER_H = 560, 380, 46
+local gui = new("ScreenGui", {
+    Name = "HeadlessHub", ResetOnSpawn = false, IgnoreGuiInset = true,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling, Parent = parentGui,
+})
 
+local function screenSize()
+    local s = gui.AbsoluteSize
+    if s.X < 10 then
+        local c = workspace.CurrentCamera
+        s = c and c.ViewportSize or Vector2.new(1920, 1080)
+    end
+    return s
+end
+
+-- Full-screen snow (created first so the window sits above it)
+local snowScreen = new("Frame", {
+    Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Visible = config.screenSnow, Parent = gui,
+})
+local sv = screenSize()
+local snowScreenLayer = createSnow(snowScreen, 100, 2, 6, sv.X, sv.Y)
+
+-- Main window
 local main = new("Frame", {
     Size = UDim2.fromOffset(WIN_W, WIN_H),
     Position = UDim2.new(0.5, -WIN_W / 2, 0.5, -WIN_H / 2),
-    BackgroundColor3 = THEME.bg, BackgroundTransparency = 1 - config.opacity * 1,
+    BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 1 - config.opacity,
     BorderSizePixel = 0, ClipsDescendants = true, Active = true, Parent = gui,
 })
-main.BackgroundTransparency = 1 - config.opacity
-corner(main, 12)
-local mainStroke = new("UIStroke", { Thickness = 1.5, Parent = main })
-onAccent(function() mainStroke.Color = accent end)
+corner(main, 14)
+new("UIGradient", {
+    Color = ColorSequence.new(Color3.fromRGB(14, 24, 50), Color3.fromRGB(8, 42, 38)),
+    Rotation = 90, Parent = main,
+})
+local mainStroke = new("UIStroke", { Thickness = 2, Color = Color3.new(1, 1, 1), Parent = main })
+local strokeGrad = new("UIGradient", { Color = FESTIVE_SEQ, Parent = mainStroke })
 local uiScale = new("UIScale", { Scale = 0, Parent = main })
 
+-- Window snow (behind everything in the window)
+local snowWin = new("Frame", {
+    Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Visible = config.windowSnow, Parent = main,
+})
+local snowWinLayer = createSnow(snowWin, 120, 2, 7, WIN_W, WIN_H)
+
 -- Header
-local header = new("Frame", { Size = UDim2.new(1, 0, 0, 40), BackgroundColor3 = THEME.side, BorderSizePixel = 0, Parent = main })
-local headerLine = new("Frame", { Size = UDim2.new(1, 0, 0, 2), Position = UDim2.new(0, 0, 1, -2), BorderSizePixel = 0, Parent = header })
-onAccent(function() headerLine.BackgroundColor3 = accent end)
+local header = new("Frame", {
+    Size = UDim2.new(1, 0, 0, HEADER_H), BackgroundColor3 = THEME.side,
+    BackgroundTransparency = 0.15, BorderSizePixel = 0, Parent = main,
+})
+local headerLine = new("Frame", {
+    Size = UDim2.new(1, 0, 0, 2), Position = UDim2.new(0, 0, 1, -2),
+    BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Parent = header,
+})
+new("UIGradient", { Color = FESTIVE_SEQ, Parent = headerLine })
 
 new("TextLabel", {
-    Size = UDim2.new(1, -110, 1, 0), Position = UDim2.new(0, 16, 0, 0),
-    BackgroundTransparency = 1, Text = "HEADLESS HUB  v3", TextColor3 = THEME.text,
-    Font = Enum.Font.GothamBlack, TextSize = 16, TextXAlignment = Enum.TextXAlignment.Left, Parent = header,
+    Size = UDim2.new(1, -120, 0, 24), Position = UDim2.new(0, 16, 0, 5),
+    BackgroundTransparency = 1, Text = "❄ HEADLESS HUB ❄", TextColor3 = THEME.text,
+    Font = Enum.Font.GothamBlack, TextSize = 17, TextXAlignment = Enum.TextXAlignment.Left, Parent = header,
 })
+local subtitle = new("TextLabel", {
+    Size = UDim2.new(1, -120, 0, 14), Position = UDim2.new(0, 16, 0, 27),
+    BackgroundTransparency = 1, Text = "CHRISTMAS EDITION  •  v4", TextColor3 = THEME.sub,
+    Font = Enum.Font.GothamBold, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left, Parent = header,
+})
+onAccent(function() subtitle.TextColor3 = accent end)
 
 local function headerButton(text, xOffset, color)
     local b = new("TextButton", {
@@ -255,18 +420,24 @@ local function headerButton(text, xOffset, color)
     b.MouseLeave:Connect(function() tween(b, 0.15, { BackgroundTransparency = 0 }) end)
     return b
 end
-local minimizeBtn = headerButton("-", -68, Color3.fromRGB(70, 70, 90))
+local minimizeBtn = headerButton("-", -68, Color3.fromRGB(70, 80, 105))
 local closeBtn = headerButton("X", -36, Color3.fromRGB(190, 55, 65))
 
 -- Sidebar + content
-local sidebar = new("Frame", { Size = UDim2.new(0, 120, 1, -40), Position = UDim2.new(0, 0, 0, 40), BackgroundColor3 = THEME.side, BorderSizePixel = 0, Parent = main })
+local sidebar = new("Frame", {
+    Size = UDim2.new(0, 124, 1, -HEADER_H), Position = UDim2.new(0, 0, 0, HEADER_H),
+    BackgroundColor3 = THEME.side, BackgroundTransparency = 0.35, BorderSizePixel = 0, Parent = main,
+})
 new("UIListLayout", { Padding = UDim.new(0, 6), Parent = sidebar })
-new("UIPadding", { PaddingTop = UDim.new(0, 10), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8), Parent = sidebar })
-local content = new("Frame", { Size = UDim2.new(1, -120, 1, -40), Position = UDim2.new(0, 120, 0, 40), BackgroundTransparency = 1, Parent = main })
+new("UIPadding", { PaddingTop = UDim.new(0, 12), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8), Parent = sidebar })
+local content = new("Frame", {
+    Size = UDim2.new(1, -124, 1, -HEADER_H - 10), Position = UDim2.new(0, 124, 0, HEADER_H),
+    BackgroundTransparency = 1, Parent = main,
+})
 
 -- Stats (FPS + ping)
 local statsLabel = new("TextLabel", {
-    Size = UDim2.new(0, 104, 0, 34), Position = UDim2.new(0, 10, 1, -40),
+    Size = UDim2.new(0, 108, 0, 34), Position = UDim2.new(0, 10, 1, -58),
     BackgroundTransparency = 1, Text = "FPS: --\nPing: --", TextColor3 = THEME.sub,
     Font = Enum.Font.Gotham, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, Parent = main,
 })
@@ -282,12 +453,61 @@ connect(RunService.RenderStepped, function()
     end
 end)
 
+-- Christmas lights across the header
+local lightsHolder = new("Frame", {
+    Size = UDim2.new(1, 0, 0, 16), Position = UDim2.new(0, 0, 0, HEADER_H - 2),
+    BackgroundTransparency = 1, Visible = config.lights, Parent = main,
+})
+new("Frame", {
+    Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 0, 3),
+    BackgroundColor3 = Color3.fromRGB(25, 70, 50), BorderSizePixel = 0, Parent = lightsHolder,
+})
+local LIGHT_COLORS = { RED, GOLD, GREEN, ICE }
+local bulbs = {}
+local BULB_COUNT = 24
+for i = 1, BULB_COUNT do
+    local x = (i - 0.5) / BULB_COUNT
+    local y = 4 + (i % 2) * 3
+    local color = LIGHT_COLORS[(i - 1) % #LIGHT_COLORS + 1]
+    local glow = new("Frame", {
+        Size = UDim2.fromOffset(16, 16), AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(x, 0, 0, y + 5), BackgroundColor3 = color,
+        BackgroundTransparency = 0.8, BorderSizePixel = 0, Parent = lightsHolder,
+    })
+    corner(glow, 8)
+    local bulb = new("Frame", {
+        Size = UDim2.fromOffset(7, 9), AnchorPoint = Vector2.new(0.5, 0),
+        Position = UDim2.new(x, 0, 0, y), BackgroundColor3 = color,
+        BorderSizePixel = 0, Parent = lightsHolder,
+    })
+    corner(bulb, 4)
+    bulbs[i] = { bulb = bulb, glow = glow }
+end
+
+-- Snow drift along the bottom of the window
+local drift = new("Frame", { Size = UDim2.fromOffset(WIN_W, 20), Position = UDim2.fromOffset(0, WIN_H - 10),
+    BackgroundTransparency = 1, Parent = main })
+local DRIFT_N = 16
+for i = 1, DRIFT_N do
+    local size = math.random(28, 48)
+    local c = new("Frame", {
+        Size = UDim2.fromOffset(size, size), BackgroundColor3 = Color3.fromRGB(240, 246, 255),
+        Position = UDim2.fromOffset((i - 1) / (DRIFT_N - 1) * WIN_W - size / 2, math.random(-3, 3)),
+        BorderSizePixel = 0, Parent = drift,
+    })
+    corner(c, size / 2)
+end
+new("Frame", {
+    Size = UDim2.new(1, 0, 0, 12), Position = UDim2.fromOffset(0, 8),
+    BackgroundColor3 = Color3.fromRGB(240, 246, 255), BorderSizePixel = 0, Parent = drift,
+})
+
 --------------------------------------------------------------------
 -- Notifications
 --------------------------------------------------------------------
 local resetting = false
 local notifHolder = new("Frame", {
-    Size = UDim2.new(0, 250, 1, -20), Position = UDim2.new(1, -260, 0, 10),
+    Size = UDim2.new(0, 260, 1, -20), Position = UDim2.new(1, -270, 0, 10),
     BackgroundTransparency = 1, Parent = gui,
 })
 new("UIListLayout", { Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Bottom, Parent = notifHolder })
@@ -296,7 +516,7 @@ local function notify(text)
     if resetting then return end
     local n = new("TextLabel", {
         Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = THEME.panel, BackgroundTransparency = 1,
-        Text = text, TextColor3 = THEME.text, TextTransparency = 1,
+        Text = "❄  " .. text, TextColor3 = THEME.text, TextTransparency = 1,
         Font = Enum.Font.GothamMedium, TextSize = 14, Parent = notifHolder,
     })
     corner(n, 8)
@@ -320,7 +540,7 @@ local currentTab
 
 local function createPage(name)
     local page = new("ScrollingFrame", {
-        Size = UDim2.new(1, -16, 1, -16), Position = UDim2.new(0, 8, 0, 8),
+        Size = UDim2.new(1, -16, 1, -16), Position = UDim2.new(0, 8, 0, 12),
         BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3,
         CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
         Visible = false, Parent = content,
@@ -336,7 +556,7 @@ local function selectTab(name)
     for n, page in pairs(pages) do page.Visible = (n == name) end
     for n, b in pairs(tabButtons) do
         local active = (n == name)
-        tween(b.button, 0.2, { BackgroundTransparency = active and 0 or 1, TextColor3 = active and THEME.text or THEME.sub })
+        tween(b.button, 0.2, { BackgroundTransparency = active and 0.1 or 1, TextColor3 = active and THEME.text or THEME.sub })
         tween(b.bar, 0.2, { Size = UDim2.new(0, 3, active and 0.6 or 0, 0) })
     end
 end
@@ -344,11 +564,14 @@ end
 local function createTab(name, icon)
     local b = new("TextButton", {
         Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = THEME.panel, BackgroundTransparency = 1,
-        Text = "   " .. icon .. "  " .. name, TextColor3 = THEME.sub, Font = Enum.Font.GothamBold,
+        Text = "  " .. icon .. "  " .. name, TextColor3 = THEME.sub, Font = Enum.Font.GothamBold,
         TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left, AutoButtonColor = false, Parent = sidebar,
     })
     corner(b, 8)
-    local bar = new("Frame", { Size = UDim2.new(0, 3, 0, 0), Position = UDim2.new(0, 0, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5), BorderSizePixel = 0, Parent = b })
+    local bar = new("Frame", {
+        Size = UDim2.new(0, 3, 0, 0), Position = UDim2.new(0, 0, 0.5, 0),
+        AnchorPoint = Vector2.new(0, 0.5), BorderSizePixel = 0, Parent = b,
+    })
     corner(bar, 2)
     onAccent(function() bar.BackgroundColor3 = accent end)
     tabButtons[name] = { button = b, bar = bar }
@@ -370,7 +593,10 @@ local function createSection(parent, order, text)
 end
 
 local function createRow(parent, order, height)
-    local row = new("Frame", { Size = UDim2.new(1, -6, 0, height), BackgroundColor3 = THEME.panel, LayoutOrder = order, Parent = parent })
+    local row = new("Frame", {
+        Size = UDim2.new(1, -6, 0, height), BackgroundColor3 = THEME.panel,
+        BackgroundTransparency = 0.2, LayoutOrder = order, Parent = parent,
+    })
     corner(row, 8)
     return row
 end
@@ -499,8 +725,7 @@ end
 
 local listening = nil
 local function createKeybind(parent, order, title, desc, key, keyName, onChange)
-    local btn
-    btn = createButton(parent, order, title, desc, keyName, function(b)
+    local btn = createButton(parent, order, title, desc, keyName, function(b)
         b.Text = "..."
         listening = function(code)
             b.Text = code.Name
@@ -517,21 +742,41 @@ local function createKeybind(parent, order, title, desc, key, keyName, onChange)
     return btn
 end
 
+local function daysToChristmas()
+    local now = os.date("*t")
+    if now.month == 12 and now.day == 25 then return 0 end
+    local target = os.time({ year = now.year, month = 12, day = 25, hour = 0 })
+    if os.time() > target then
+        target = os.time({ year = now.year + 1, month = 12, day = 25, hour = 0 })
+    end
+    return math.ceil((target - os.time()) / 86400)
+end
+
 --------------------------------------------------------------------
 -- Pages
 --------------------------------------------------------------------
-local mainPage = createTab("Main", "●")
+local mainPage = createTab("Main", "❄")
 local playerPage = createTab("Player", "▲")
+local xmasPage = createTab("Christmas", "★")
 local visualsPage = createTab("Visuals", "◆")
 local settingsPage = createTab("Settings", "⚙")
 
 -- Main
-createSection(mainPage, 0, "Head")
-createToggle(mainPage, 1, "Headless", "Hides your head (only you see it)", "headless", function(v)
+do
+    local days = daysToChristmas()
+    local title
+    if days == 0 then title = "🎄 Merry Christmas!"
+    elseif days == 1 then title = "🎄 1 day until Christmas"
+    else title = "🎄 " .. days .. " days until Christmas" end
+    local row = createRow(mainPage, 0, 56)
+    rowLabels(row, title, "Happy holidays, " .. player.DisplayName .. "!")
+end
+createSection(mainPage, 1, "Head")
+createToggle(mainPage, 2, "Headless", "Hides your head (only you see it)", "headless", function(v)
     notify("Headless: " .. (v and "ON" or "OFF"))
 end)
-createToggle(mainPage, 2, "Hide Face", "Also hides the face decal while headless", "hideFace")
-createToggle(mainPage, 3, "Hide Head Accessories", "Hats, hair and face accessories", "hideAccessories", function(v)
+createToggle(mainPage, 3, "Hide Face", "Also hides the face decal while headless", "hideFace")
+createToggle(mainPage, 4, "Hide Head Accessories", "Hats, hair and face accessories", "hideAccessories", function(v)
     notify("Head accessories: " .. (v and "hidden" or "shown"))
 end)
 
@@ -552,6 +797,27 @@ createSection(playerPage, 6, "Camera")
 createToggle(playerPage, 7, "Custom FOV", "Override your field of view", "fovOn")
 createSlider(playerPage, 8, "Field of View", "fov", 40, 120, 0)
 
+-- Christmas
+createSection(xmasPage, 0, "Decorations")
+createToggle(xmasPage, 1, "Santa Hat", "A hat on your head (only you see it)", "santaHat", function(v)
+    refreshHat()
+    notify("Santa hat: " .. (v and "ON" or "OFF"))
+end)
+createToggle(xmasPage, 2, "Christmas Lights", "Twinkling lights on the window", "lights", function(v)
+    lightsHolder.Visible = v
+end)
+createSection(xmasPage, 3, "Snow")
+createToggle(xmasPage, 4, "Window Snow", "Snow falling inside the GUI", "windowSnow", function(v)
+    snowWin.Visible = v
+end)
+createToggle(xmasPage, 5, "Screen Snow", "Snow falling across your whole screen", "screenSnow", function(v)
+    snowScreen.Visible = v
+    notify("Screen snow: " .. (v and "ON" or "OFF"))
+end)
+createSlider(xmasPage, 6, "Snow Amount", "snowAmount", 10, 120, 0)
+createSlider(xmasPage, 7, "Snow Speed", "snowSpeed", 0.2, 3, 1)
+createSlider(xmasPage, 8, "Wind", "snowWind", -60, 60, 0)
+
 -- Visuals
 createSection(visualsPage, 0, "Accent Color")
 local swatchRow = createRow(visualsPage, 1, 56)
@@ -569,12 +835,12 @@ for _, a in ipairs(ACCENT_LIST) do
     sw.MouseButton1Click:Connect(function()
         config.accent = name
         save()
-        if components.rainbow and components.rainbow.Get() then components.rainbow.Set(false) end
+        if components.festive and components.festive.Get() then components.festive.Set(false) end
         setAccent(color)
         notify("Theme: " .. name)
     end)
 end
-createToggle(visualsPage, 2, "Rainbow Theme", "Cycles the accent color", "rainbow", function(v)
+createToggle(visualsPage, 2, "Festive Colors", "Cycles red, gold, green and ice", "festive", function(v)
     if not v then setAccent(accentByName(config.accent)) end
 end)
 createSection(visualsPage, 3, "Window")
@@ -583,20 +849,7 @@ createSlider(visualsPage, 5, "Window Opacity", "opacity", 0.4, 1, 2, function(v)
     main.BackgroundTransparency = 1 - v
 end)
 
--- Rainbow loop
-local hue, lastRainbow = 0, 0
-connect(RunService.Heartbeat, function(dt)
-    if not config.rainbow then return end
-    hue = (hue + dt * 0.15) % 1
-    lastRainbow += dt
-    if lastRainbow >= 0.05 then
-        lastRainbow = 0
-        setAccent(Color3.fromHSV(hue, 0.7, 1))
-    end
-end)
-
--- Show / hide logic (needed by Settings)
-local visible, minimized = true, false
+-- Show / hide logic
 local function setVisible(v)
     visible = v
     if v then
@@ -608,6 +861,24 @@ local function setVisible(v)
     end
 end
 
+-- Unload
+local function unload()
+    running = false
+    if writefile then pcall(function() writefile(CONFIG_FILE, HttpService:JSONEncode(config)) end) end
+    applyHeadless(true)
+    destroyHat()
+    local hum = getHum()
+    if hum then
+        if speedApplied then hum.WalkSpeed = 16 end
+        if jumpApplied then hum.JumpPower = 50 end
+    end
+    if cam and fovApplied then cam.FieldOfView = origFov end
+    for _, c in ipairs(connections) do c:Disconnect() end
+    gui:Destroy()
+    env.HeadlessHubUnload = nil
+end
+env.HeadlessHubUnload = unload
+
 -- Settings
 createSection(settingsPage, 0, "Keybinds")
 createKeybind(settingsPage, 1, "GUI Key", "Show / hide the GUI", "guiKey", keys.gui.Name, function(code) keys.gui = code end)
@@ -617,37 +888,21 @@ createSection(settingsPage, 3, "Manage")
 createButton(settingsPage, 4, "Reset", "Restore all default settings", "Reset", function()
     resetting = true
     for key, comp in pairs(components) do
-        if key == "guiKey" or key == "headlessKey" then
-            comp.Set(DEFAULTS[key])
-        elseif comp.Set then
-            comp.Set(DEFAULTS[key])
-        end
+        if comp.Set then comp.Set(DEFAULTS[key]) end
     end
     config.accent = DEFAULTS.accent
     setAccent(accentByName(DEFAULTS.accent))
     resetting = false
     notify("Everything reset")
 end)
-createButton(settingsPage, 5, "Unload", "Restore everything and remove GUI", "Unload", function()
-    running = false
-    if writefile then pcall(function() writefile(CONFIG_FILE, HttpService:JSONEncode(config)) end) end
-    applyHeadless(true)
-    local hum = getHum()
-    if hum then
-        if speedApplied then hum.WalkSpeed = 16 end
-        if jumpApplied then hum.JumpPower = 50 end
-    end
-    if cam and fovApplied then cam.FieldOfView = origFov end
-    for _, c in ipairs(connections) do c:Disconnect() end
-    gui:Destroy()
-end)
+createButton(settingsPage, 5, "Unload", "Restore everything and remove GUI", "Unload", unload)
 
 selectTab("Main")
 
 --------------------------------------------------------------------
 -- Minimize, close, hotkeys
 --------------------------------------------------------------------
-local FULL, MINI = UDim2.fromOffset(WIN_W, WIN_H), UDim2.fromOffset(WIN_W, 40)
+local FULL, MINI = UDim2.fromOffset(WIN_W, WIN_H), UDim2.fromOffset(WIN_W, HEADER_H)
 
 minimizeBtn.MouseButton1Click:Connect(function()
     minimized = not minimized
@@ -677,11 +932,11 @@ connect(UserInputService.InputBegan, function(input, processed)
     end
 end)
 
--- Floating button (mobile / forgot the key)
+-- Floating snowflake button (mobile / forgot the key)
 local fab = new("TextButton", {
     Size = UDim2.fromOffset(44, 44), Position = UDim2.new(0, 14, 0.5, -22),
-    Text = "H", TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBlack,
-    TextSize = 20, AutoButtonColor = false, Parent = gui,
+    Text = "❄", TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBlack,
+    TextSize = 22, AutoButtonColor = false, Parent = gui,
 })
 corner(fab, 22)
 onAccent(function() fab.BackgroundColor3 = accent end)
@@ -706,6 +961,47 @@ connect(UserInputService.InputChanged, function(input)
     end
 end)
 
+--------------------------------------------------------------------
+-- Visual loop: snow, lights, border, festive colors, hat watchdog
+--------------------------------------------------------------------
+local t, festiveAcc, hatAcc = 0, 0, 0
+connect(RunService.Heartbeat, function(dt)
+    t += dt
+
+    if config.windowSnow and visible and not minimized then
+        stepSnow(snowWinLayer, dt, t, WIN_W, WIN_H, config.snowAmount, config.snowSpeed, config.snowWind)
+    end
+    if config.screenSnow then
+        local s = screenSize()
+        stepSnow(snowScreenLayer, dt, t, s.X, s.Y, math.min(config.snowAmount, 100), config.snowSpeed, config.snowWind)
+    end
+
+    if visible then
+        strokeGrad.Rotation = (t * 50) % 360
+        if config.lights then
+            for i, b in ipairs(bulbs) do
+                local v = 0.5 + 0.5 * math.sin(t * 2.6 + i * 1.3)
+                b.bulb.BackgroundTransparency = 0.5 * (1 - v)
+                b.glow.BackgroundTransparency = 0.88 - 0.4 * v
+            end
+        end
+    end
+
+    if config.festive then
+        festiveAcc += dt
+        if festiveAcc >= 0.05 then
+            festiveAcc = 0
+            setAccent(festiveColor(t * 0.12))
+        end
+    end
+
+    hatAcc += dt
+    if hatAcc >= 0.5 then
+        hatAcc = 0
+        refreshHat()
+    end
+end)
+
 -- Intro animation
-tween(uiScale, 0.45, { Scale = config.scale }, Enum.EasingStyle.Back)
-task.delay(0.5, function() notify("Headless Hub v3 loaded") end)
+tween(uiScale, 0.5, { Scale = config.scale }, Enum.EasingStyle.Back)
+task.delay(0.6, function() notify("Merry Christmas, " .. player.DisplayName .. "!") end)
