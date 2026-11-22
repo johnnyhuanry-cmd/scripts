@@ -290,7 +290,82 @@ local function teleportToQuery(query)
     notify("Teleported to " .. target.DisplayName)
 end
 
--- Chat command: !to <name>
+--------------------------------------------------------------------
+-- Hide + mute players (local only)
+--------------------------------------------------------------------
+local hidden = {}
+local hideOrig = setmetatable({}, { __mode = "k" })
+
+local function applyHide(p, on)
+    local char = p.Character
+    if char then
+        for _, d in ipairs(char:GetDescendants()) do
+            if d:IsA("BasePart") or d:IsA("Decal") then
+                if hideOrig[d] == nil then hideOrig[d] = d.Transparency end
+                local target = on and 1 or hideOrig[d]
+                if d.Transparency ~= target then d.Transparency = target end
+            end
+        end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum.DisplayDistanceType = on and Enum.HumanoidDisplayDistanceType.None or Enum.HumanoidDisplayDistanceType.Viewer
+        end
+    end
+    -- mute their voice input on your end
+    for _, d in ipairs(p:GetDescendants()) do
+        if d:IsA("AudioDeviceInput") then
+            pcall(function() d.Muted = on end)
+        end
+    end
+end
+
+local function setHidden(p, on)
+    if on then
+        hidden[p] = true
+        pcall(function() game:GetService("VoiceChatInternal"):SubscribeBlock(p.UserId) end)
+    else
+        hidden[p] = nil
+        pcall(function() game:GetService("VoiceChatInternal"):SubscribeUnblock(p.UserId) end)
+    end
+    applyHide(p, on)
+end
+
+local function restoreHidden()
+    for p in pairs(hidden) do applyHide(p, false) end
+    hidden = {}
+end
+
+local hideTimer = 0
+connect(RunService.Heartbeat, function(dt)
+    hideTimer += dt
+    if hideTimer < 0.15 then return end
+    hideTimer = 0
+    for p in pairs(hidden) do applyHide(p, true) end
+end)
+connect(Players.PlayerRemoving, function(p) hidden[p] = nil end)
+
+local function hideCommand(query, on)
+    query = query:gsub("^%s+", ""):gsub("%s+$", "")
+    if query:lower() == "all" then
+        local n = 0
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= player then setHidden(p, on) n += 1 end
+        end
+        notify((on and "Hid " or "Showed ") .. n .. " players")
+        return
+    end
+    local target = findPlayer(query)
+    if not target then
+        notify("No player matches \"" .. query .. "\"")
+        return
+    end
+    setHidden(target, on)
+    notify((on and "Hidden + muted: " or "Showed: ") .. target.DisplayName)
+end
+
+--------------------------------------------------------------------
+-- Chat commands: !to, !hide, !unhide / !show
+--------------------------------------------------------------------
 local lastMsg, lastTime = "", 0
 local function handleChat(msg)
     if type(msg) ~= "string" then return end
@@ -298,11 +373,16 @@ local function handleChat(msg)
     if msg == lastMsg and now - lastTime < 0.5 then return end
     lastMsg, lastTime = msg, now
 
-    local arg = msg:match("^%s*![tT][oO]%s+(.-)%s*$")
-    if arg and arg ~= "" then
-        teleportToQuery(arg)
-    elseif msg:match("^%s*![tT][oO]%s*$") then
-        notify("Usage: !to <name>")
+    local cmd, arg = msg:match("^%s*!(%a+)%s*(.-)%s*$")
+    if not cmd then return end
+    cmd = cmd:lower()
+
+    if cmd == "to" then
+        if arg ~= "" then teleportToQuery(arg) else notify("Usage: !to <name>") end
+    elseif cmd == "hide" then
+        if arg ~= "" then hideCommand(arg, true) else notify("Usage: !hide <name or all>") end
+    elseif cmd == "unhide" or cmd == "show" then
+        if arg ~= "" then hideCommand(arg, false) else notify("Usage: !unhide <name or all>") end
     end
 end
 
@@ -316,7 +396,7 @@ pcall(function()
 end)
 
 --------------------------------------------------------------------
--- FPS tags above players
+-- Player tags (FPS, distance, health)
 --------------------------------------------------------------------
 local tagFolder = new("Folder", { Name = "HeadlessHubTags", Parent = parentGui })
 local tags = {}
@@ -348,25 +428,26 @@ local function ensureTag(p)
 
     local g = new("BillboardGui", {
         Name = "Tag_" .. p.UserId, Adornee = head, AlwaysOnTop = true,
-        Size = UDim2.fromOffset(120, 34), StudsOffset = Vector3.new(0, 2.4, 0),
+        Size = UDim2.fromOffset(130, 50), StudsOffset = Vector3.new(0, 2.8, 0),
         MaxDistance = config.tagRange, LightInfluence = 0, Parent = tagFolder,
     })
     local bg = new("Frame", {
         Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = THEME.bg,
-        BackgroundTransparency = 0.2, BorderSizePixel = 0, Parent = g,
+        BackgroundTransparency = 0.15, BorderSizePixel = 0, Parent = g,
     })
     corner(bg, 6)
     new("UIStroke", { Color = THEME.line, Thickness = 1, Parent = bg })
-    local nameL = new("TextLabel", {
-        Size = UDim2.new(1, -8, 0.5, 0), Position = UDim2.new(0, 4, 0, 1), BackgroundTransparency = 1,
-        Text = p.DisplayName, TextColor3 = THEME.text, Font = FONT, TextSize = 13,
-        TextTruncate = Enum.TextTruncate.AtEnd, Parent = bg,
-    })
-    local fpsL = new("TextLabel", {
-        Size = UDim2.new(1, -8, 0.5, -2), Position = UDim2.new(0, 4, 0.5, 0), BackgroundTransparency = 1,
-        Text = "-- FPS", TextColor3 = THEME.sub, Font = FONT, TextSize = 13, Parent = bg,
-    })
-    t = { gui = g, nameL = nameL, fpsL = fpsL, last = nil, count = 0, est = nil }
+    local function line(y, size, color)
+        return new("TextLabel", {
+            Size = UDim2.new(1, -8, 0, 15), Position = UDim2.new(0, 4, 0, y), BackgroundTransparency = 1,
+            Text = "", TextColor3 = color, Font = FONT, TextSize = size,
+            TextTruncate = Enum.TextTruncate.AtEnd, Parent = bg,
+        })
+    end
+    local nameL = line(2, 14, THEME.text)
+    local fpsL = line(18, 13, THEME.sub)
+    local infoL = line(33, 12, THEME.sub)
+    t = { gui = g, nameL = nameL, fpsL = fpsL, infoL = infoL, last = nil, count = 0, est = nil }
     tags[p] = t
     return t
 end
@@ -378,7 +459,6 @@ connect(RunService.RenderStepped, function(dt)
     if not config.fpsTags then return end
     tagTimer += dt
 
-    -- count how often each character's position updates for you
     for p, t in pairs(tags) do
         local root = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
         if root then
@@ -393,23 +473,43 @@ connect(RunService.RenderStepped, function(dt)
     if tagTimer >= 1 then
         local elapsed = tagTimer
         tagTimer = 0
+        local myRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
         for p, t in pairs(tags) do
             t.nameL.Text = p.DisplayName
+            local char = p.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+
+            -- distance + health (real values)
+            local dist = (myRoot and root) and math.floor((myRoot.Position - root.Position).Magnitude) or nil
+            local hp = hum and math.floor(hum.Health) or nil
+            t.infoL.Text = (dist and (dist .. " studs") or "-") .. "  |  " .. (hp and (hp .. " HP") or "-")
+
+            -- FPS (exact only if the game publishes it)
+            local exact = p:GetAttribute("FPS") or p:GetAttribute("Fps")
+            if not exact then
+                local ls = p:FindFirstChild("leaderstats")
+                local v = ls and (ls:FindFirstChild("FPS") or ls:FindFirstChild("Fps"))
+                exact = v and v.Value
+            end
+
             if p == player then
                 t.fpsL.Text = fps .. " FPS"
                 t.fpsL.TextColor3 = fpsColor(fps)
-                t.fpsL.TextTransparency = 0
+            elseif exact and tonumber(exact) then
+                t.fpsL.Text = math.floor(tonumber(exact)) .. " FPS"
+                t.fpsL.TextColor3 = fpsColor(tonumber(exact))
             else
-                local active = t.count >= 4
-                if active then t.est = math.min(math.floor(t.count / elapsed + 0.5), 60) end
-                if t.est then
-                    t.fpsL.Text = "~" .. t.est .. " FPS"
+                if t.count >= 4 then
+                    t.est = math.min(math.floor(t.count / elapsed + 0.5), 60)
+                    t.fpsL.Text = "~" .. t.est .. " FPS (est)"
                     t.fpsL.TextColor3 = fpsColor(t.est)
-                    t.fpsL.TextTransparency = active and 0 or 0.5
-                else
-                    t.fpsL.Text = "-- FPS"
+                elseif t.est then
+                    t.fpsL.Text = "idle (last ~" .. t.est .. ")"
                     t.fpsL.TextColor3 = THEME.sub
-                    t.fpsL.TextTransparency = 0
+                else
+                    t.fpsL.Text = "idle"
+                    t.fpsL.TextColor3 = THEME.sub
                 end
             end
             t.count = 0
@@ -452,7 +552,7 @@ local header = new("Frame", {
     Size = UDim2.new(1, 0, 0, HEADER_H), BackgroundColor3 = THEME.side,
     BorderSizePixel = 0, Parent = main,
 })
-local headerLine = new("Frame", {
+new("Frame", {
     Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 1, -1),
     BackgroundColor3 = THEME.line, BorderSizePixel = 0, Parent = header,
 })
@@ -886,13 +986,20 @@ createSlider(playerPage, 8, "Field of View", "fov", 40, 120, 0)
 
 -- Players
 createSection(playersPage, 0, "Teleport")
-createInput(playersPage, 1, "Go To Player", "Type part of a name, or use !to name in chat", "name...", "Go", teleportToQuery)
-createSection(playersPage, 2, "Tags")
-createToggle(playersPage, 3, "FPS Tags", "Show an FPS tag above every player", "fpsTags", function(v)
-    if not v then clearTags() end
-    notify("FPS tags " .. (v and "on" or "off"))
+createInput(playersPage, 1, "Go To Player", "Part of a name, or !to name in chat", "name...", "Go", teleportToQuery)
+createSection(playersPage, 2, "Hide + Mute")
+createInput(playersPage, 3, "Hide Player", "Name, part of a name, or all (!hide in chat)", "name or all...", "Hide", function(q)
+    if q ~= "" then hideCommand(q, true) end
 end)
-createSlider(playersPage, 4, "Tag Range", "tagRange", 50, 1000, 0, function(v)
+createInput(playersPage, 4, "Unhide Player", "Name, part of a name, or all (!unhide in chat)", "name or all...", "Show", function(q)
+    if q ~= "" then hideCommand(q, false) end
+end)
+createSection(playersPage, 5, "Tags")
+createToggle(playersPage, 6, "Player Tags", "FPS, distance and health above every player", "fpsTags", function(v)
+    if not v then clearTags() end
+    notify("Player tags " .. (v and "on" or "off"))
+end)
+createSlider(playersPage, 7, "Tag Range", "tagRange", 50, 1000, 0, function(v)
     for _, t in pairs(tags) do t.gui.MaxDistance = v end
 end)
 
@@ -943,6 +1050,7 @@ local function unload()
     running = false
     if writefile then pcall(function() writefile(CONFIG_FILE, HttpService:JSONEncode(config)) end) end
     applyLook(true)
+    restoreHidden()
     clearTags()
     pcall(function() tagFolder:Destroy() end)
     local hum = getHum()
