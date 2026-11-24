@@ -1,4 +1,4 @@
--- Mini Panel v2: draggable, animated, click sounds, noclip, Click TP tool, !to / !hide / !unhide
+-- Mini Panel v2.1: draggable, animated, click sounds, noclip, Click TP tool, !to / !hide / !unhide
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UIS = game:GetService("UserInputService")
@@ -214,9 +214,9 @@ local function makeToggle(labelText, y, onChange)
 	return set
 end
 
----------------------------------------------------------------- Noclip (fixed: restores collisions when off)
+---------------------------------------------------------------- Noclip (restores collisions when off)
 local noclipConn
-local touched = {} -- parts we turned non-collidable (they were collidable before)
+local touched = {}
 
 local function setNoclip(on)
 	if noclipConn then noclipConn:Disconnect() noclipConn = nil end
@@ -284,7 +284,7 @@ local function giveTool()
 	t.Activated:Connect(function()
 		if not tpEnabled then return end
 		Mouse.TargetFilter = LP.Character
-		if not Mouse.Target then return end -- clicked the sky
+		if not Mouse.Target then return end
 		smoothTeleport(Mouse.Hit.Position)
 	end)
 	tpTool = t
@@ -453,6 +453,7 @@ end
 ---------------------------------------------------------------- !hide (client-side only)
 local hidden = {}      -- [UserId] = true
 local origVolume = setmetatable({}, {__mode = "k"})
+local origDisplay = setmetatable({}, {__mode = "k"})
 
 local function applyHide(plr)
 	local char = plr.Character
@@ -467,6 +468,10 @@ local function applyHide(plr)
 				d.Volume = 0
 			elseif d:IsA("BillboardGui") then
 				d.Enabled = false
+			elseif d:IsA("Humanoid") then
+				-- hides the overhead name + health bar
+				if origDisplay[d] == nil then origDisplay[d] = d.DisplayDistanceType end
+				d.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
 			end
 		end
 	end
@@ -489,6 +494,8 @@ local function applyUnhide(plr)
 				d.Volume = origVolume[d] or 0.5
 			elseif d:IsA("BillboardGui") then
 				d.Enabled = true
+			elseif d:IsA("Humanoid") then
+				d.DisplayDistanceType = origDisplay[d] or Enum.HumanoidDisplayDistanceType.Viewer
 			end
 		end
 	end
@@ -547,7 +554,7 @@ local function runCommand(text)
 		if not plr then return say(err) end
 		hidden[plr.UserId] = true
 		applyHide(plr)
-		say("Hidden + muted: " .. plr.Name)
+		say("Hidden (body, name, sound, chat): " .. plr.Name)
 	elseif cmd == "unhide" then
 		local plr, err = findPlayer(arg)
 		if not plr then return say(err) end
