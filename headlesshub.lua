@@ -1,13 +1,29 @@
--- Mini Panel: K toggles, noclip switch, !to / !hide / !unhide
+-- Mini Panel v2: draggable, animated, click sounds, noclip, Click TP tool, !to / !hide / !unhide
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
-local UserInputService = game:GetService("UserInputService")
+local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local TextChatService = game:GetService("TextChatService")
+local Debris = game:GetService("Debris")
 local LP = Players.LocalPlayer
+local Mouse = LP:GetMouse()
 
-local parent = (gethui and gethui()) or (pcall(function() return game.CoreGui end) and game.CoreGui) or LP:WaitForChild("PlayerGui")
-if parent:FindFirstChild("MiniPanel") then parent.MiniPanel:Destroy() end
+-- clean up any previous run
+local env = (getgenv and getgenv()) or _G
+if env.MiniPanelCleanup then pcall(env.MiniPanelCleanup) end
+
+local conns = {}
+local function track(c) table.insert(conns, c) return c end
+
+local function getParent()
+	if gethui then
+		local ok, h = pcall(gethui)
+		if ok and h then return h end
+	end
+	local ok = pcall(function() return game.CoreGui:GetChildren() end)
+	if ok then return game.CoreGui end
+	return LP:WaitForChild("PlayerGui")
+end
 
 local function tween(obj, t, props, style, dir)
 	local tw = TweenService:Create(obj, TweenInfo.new(t, style or Enum.EasingStyle.Quint, dir or Enum.EasingDirection.Out), props)
@@ -16,17 +32,37 @@ local function tween(obj, t, props, style, dir)
 end
 local function corner(o, r) local c = Instance.new("UICorner", o) c.CornerRadius = UDim.new(0, r) return c end
 
+---------------------------------------------------------------- Colors
+local BG        = Color3.fromRGB(24, 24, 32)
+local ROW       = Color3.fromRGB(34, 34, 46)
+local ROW_HOVER = Color3.fromRGB(44, 44, 60)
+local ACCENT    = Color3.fromRGB(120, 90, 255)
+local ACCENT2   = Color3.fromRGB(80, 200, 255)
+local OFF       = Color3.fromRGB(70, 70, 90)
+
 ---------------------------------------------------------------- GUI
 local gui = Instance.new("ScreenGui")
 gui.Name = "MiniPanel"
 gui.ResetOnSpawn = false
-gui.Parent = parent
+gui.Parent = getParent()
+
+-- sounds (swap the IDs if you want different ones)
+local CLICK_ID, TOGGLE_ID = "rbxassetid://421058925", "rbxassetid://6895079853"
+local function sfx(id, speed, vol)
+	local s = Instance.new("Sound")
+	s.SoundId = id
+	s.Volume = vol or 0.6
+	s.PlaybackSpeed = speed or 1
+	s.Parent = gui
+	s:Play()
+	Debris:AddItem(s, 2)
+end
 
 local main = Instance.new("CanvasGroup")
-main.Size = UDim2.fromOffset(300, 230)
+main.Size = UDim2.fromOffset(300, 270)
 main.AnchorPoint = Vector2.new(0.5, 0.5)
 main.Position = UDim2.fromScale(0.5, 0.5)
-main.BackgroundColor3 = Color3.fromRGB(24, 24, 32)
+main.BackgroundColor3 = BG
 main.GroupTransparency = 1
 main.Visible = false
 main.Parent = gui
@@ -36,32 +72,51 @@ local scale = Instance.new("UIScale", main)
 scale.Scale = 0.6
 
 local stroke = Instance.new("UIStroke", main)
-stroke.Color = Color3.fromRGB(120, 90, 255)
 stroke.Thickness = 1.5
+stroke.Color = Color3.new(1, 1, 1)
+local grad = Instance.new("UIGradient", stroke)
+grad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, ACCENT),
+	ColorSequenceKeypoint.new(0.5, ACCENT2),
+	ColorSequenceKeypoint.new(1, ACCENT),
+})
+
+-- title bar (drag handle)
+local handle = Instance.new("Frame")
+handle.Size = UDim2.new(1, -50, 0, 44)
+handle.BackgroundTransparency = 1
+handle.Parent = main
+
+local dot = Instance.new("Frame")
+dot.Size = UDim2.fromOffset(8, 8)
+dot.Position = UDim2.fromOffset(16, 18)
+dot.BackgroundColor3 = ACCENT2
+dot.Parent = handle
+corner(dot, 4)
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -50, 0, 36)
-title.Position = UDim2.fromOffset(14, 4)
+title.Size = UDim2.new(1, -40, 1, 0)
+title.Position = UDim2.fromOffset(32, 0)
 title.BackgroundTransparency = 1
 title.Text = "Mini Panel"
 title.Font = Enum.Font.GothamBold
 title.TextSize = 16
 title.TextColor3 = Color3.new(1, 1, 1)
 title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = main
+title.Parent = handle
 
 local function hoverable(btn, normal, hover)
 	local s = Instance.new("UIScale", btn)
 	btn.MouseEnter:Connect(function()
 		tween(btn, 0.2, {BackgroundColor3 = hover})
-		tween(s, 0.2, {Scale = 1.06}, Enum.EasingStyle.Back)
+		tween(s, 0.2, {Scale = 1.08}, Enum.EasingStyle.Back)
 	end)
 	btn.MouseLeave:Connect(function()
 		tween(btn, 0.2, {BackgroundColor3 = normal})
 		tween(s, 0.2, {Scale = 1})
 	end)
-	btn.MouseButton1Down:Connect(function() tween(s, 0.1, {Scale = 0.94}) end)
-	btn.MouseButton1Up:Connect(function() tween(s, 0.15, {Scale = 1.06}, Enum.EasingStyle.Back) end)
+	btn.MouseButton1Down:Connect(function() tween(s, 0.1, {Scale = 0.92}) end)
+	btn.MouseButton1Up:Connect(function() tween(s, 0.15, {Scale = 1.08}, Enum.EasingStyle.Back) end)
 end
 
 local closeBtn = Instance.new("TextButton")
@@ -77,50 +132,195 @@ closeBtn.Parent = main
 corner(closeBtn, 8)
 hoverable(closeBtn, Color3.fromRGB(50, 50, 66), Color3.fromRGB(220, 70, 80))
 
--- Noclip row
-local row = Instance.new("Frame")
-row.Size = UDim2.new(1, -28, 0, 40)
-row.Position = UDim2.fromOffset(14, 48)
-row.BackgroundColor3 = Color3.fromRGB(34, 34, 46)
-row.Parent = main
-corner(row, 10)
+-- output label
+local out = Instance.new("TextLabel")
+out.Size = UDim2.new(1, -28, 0, 64)
+out.Position = UDim2.fromOffset(14, 194)
+out.BackgroundTransparency = 1
+out.Text = "K = open/close  |  drag the title to move"
+out.Font = Enum.Font.Gotham
+out.TextSize = 12
+out.TextWrapped = true
+out.TextYAlignment = Enum.TextYAlignment.Top
+out.TextXAlignment = Enum.TextXAlignment.Left
+out.TextColor3 = Color3.fromRGB(170, 170, 190)
+out.Parent = main
+local function say(msg)
+	out.Text = msg
+	out.TextTransparency = 1
+	tween(out, 0.3, {TextTransparency = 0})
+end
 
-local rowLabel = Instance.new("TextLabel")
-rowLabel.Size = UDim2.new(1, -80, 1, 0)
-rowLabel.Position = UDim2.fromOffset(12, 0)
-rowLabel.BackgroundTransparency = 1
-rowLabel.Text = "Noclip"
-rowLabel.Font = Enum.Font.GothamMedium
-rowLabel.TextSize = 14
-rowLabel.TextColor3 = Color3.new(1, 1, 1)
-rowLabel.TextXAlignment = Enum.TextXAlignment.Left
-rowLabel.Parent = row
+-- toggle row builder
+local function makeToggle(labelText, y, onChange)
+	local row = Instance.new("TextButton")
+	row.Size = UDim2.new(1, -28, 0, 40)
+	row.Position = UDim2.fromOffset(14, y)
+	row.BackgroundColor3 = ROW
+	row.AutoButtonColor = false
+	row.Text = ""
+	row.Parent = main
+	corner(row, 10)
+	local rs = Instance.new("UIScale", row)
 
-local sw = Instance.new("TextButton")
-sw.Size = UDim2.fromOffset(46, 24)
-sw.Position = UDim2.new(1, -58, 0.5, -12)
-sw.BackgroundColor3 = Color3.fromRGB(70, 70, 90)
-sw.Text = ""
-sw.AutoButtonColor = false
-sw.Parent = row
-corner(sw, 12)
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(1, -80, 1, 0)
+	lbl.Position = UDim2.fromOffset(12, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = labelText
+	lbl.Font = Enum.Font.GothamMedium
+	lbl.TextSize = 14
+	lbl.TextColor3 = Color3.fromRGB(200, 200, 215)
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.Parent = row
 
-local knob = Instance.new("Frame")
-knob.Size = UDim2.fromOffset(18, 18)
-knob.Position = UDim2.fromOffset(3, 3)
-knob.BackgroundColor3 = Color3.new(1, 1, 1)
-knob.Parent = sw
-corner(knob, 9)
+	local sw = Instance.new("Frame")
+	sw.Size = UDim2.fromOffset(46, 24)
+	sw.Position = UDim2.new(1, -58, 0.5, -12)
+	sw.BackgroundColor3 = OFF
+	sw.Parent = row
+	corner(sw, 12)
 
-local swScale = Instance.new("UIScale", sw)
-sw.MouseEnter:Connect(function() tween(swScale, 0.2, {Scale = 1.08}, Enum.EasingStyle.Back) end)
-sw.MouseLeave:Connect(function() tween(swScale, 0.2, {Scale = 1}) end)
+	local knob = Instance.new("Frame")
+	knob.Size = UDim2.fromOffset(18, 18)
+	knob.Position = UDim2.fromOffset(3, 3)
+	knob.BackgroundColor3 = Color3.new(1, 1, 1)
+	knob.Parent = sw
+	corner(knob, 9)
 
--- Command box
+	local state = false
+	local function set(v)
+		state = v
+		tween(knob, 0.28, {Position = v and UDim2.fromOffset(25, 3) or UDim2.fromOffset(3, 3)}, Enum.EasingStyle.Back)
+		tween(sw, 0.25, {BackgroundColor3 = v and ACCENT or OFF})
+		tween(lbl, 0.25, {TextColor3 = v and Color3.new(1, 1, 1) or Color3.fromRGB(200, 200, 215)})
+		onChange(v)
+	end
+
+	row.MouseEnter:Connect(function()
+		tween(row, 0.2, {BackgroundColor3 = ROW_HOVER})
+		tween(rs, 0.2, {Scale = 1.02}, Enum.EasingStyle.Back)
+	end)
+	row.MouseLeave:Connect(function()
+		tween(row, 0.2, {BackgroundColor3 = ROW})
+		tween(rs, 0.2, {Scale = 1})
+	end)
+	row.MouseButton1Down:Connect(function() tween(rs, 0.1, {Scale = 0.97}) end)
+	row.MouseButton1Up:Connect(function() tween(rs, 0.15, {Scale = 1.02}, Enum.EasingStyle.Back) end)
+	row.MouseButton1Click:Connect(function()
+		sfx(TOGGLE_ID, state and 0.85 or 1.15)
+		set(not state)
+	end)
+	return set
+end
+
+---------------------------------------------------------------- Noclip (fixed: restores collisions when off)
+local noclipConn
+local touched = {} -- parts we turned non-collidable (they were collidable before)
+
+local function setNoclip(on)
+	if noclipConn then noclipConn:Disconnect() noclipConn = nil end
+	if on then
+		noclipConn = RunService.Stepped:Connect(function()
+			local char = LP.Character
+			if not char then return end
+			for _, p in ipairs(char:GetDescendants()) do
+				if p:IsA("BasePart") and p.CanCollide then
+					touched[p] = true
+					p.CanCollide = false
+				end
+			end
+		end)
+		say("Noclip ON")
+	else
+		for p in pairs(touched) do
+			if p.Parent then p.CanCollide = true end
+		end
+		table.clear(touched)
+		say("Noclip OFF")
+	end
+end
+
+---------------------------------------------------------------- Click TP tool
+local tpEnabled = false
+local tpTool, tpTween
+
+local function smoothTeleport(pos)
+	local char = LP.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	local lift = (hum and hum.HipHeight or 2) + root.Size.Y / 2 + 0.5
+	local dist = (root.Position - pos).Magnitude
+	local t = math.clamp(dist / 250, 0.25, 1.1)
+	local rotation = root.CFrame - root.CFrame.Position
+	local target = CFrame.new(pos + Vector3.new(0, lift, 0)) * rotation
+
+	if tpTween then tpTween:Cancel() end
+	root.Anchored = true
+	local tw = TweenService:Create(root, TweenInfo.new(t, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {CFrame = target})
+	tpTween = tw
+	tw.Completed:Connect(function()
+		if tpTween ~= tw then return end
+		if root.Parent then
+			root.Anchored = false
+			root.AssemblyLinearVelocity = Vector3.zero
+		end
+	end)
+	tw:Play()
+end
+
+local function removeTool()
+	if tpTool then tpTool:Destroy() tpTool = nil end
+end
+
+local function giveTool()
+	if tpTool and tpTool.Parent then return end
+	local t = Instance.new("Tool")
+	t.Name = "Click TP"
+	t.ToolTip = "Equip, then click/tap anywhere to teleport"
+	t.RequiresHandle = false
+	t.CanBeDropped = false
+	t.Activated:Connect(function()
+		if not tpEnabled then return end
+		Mouse.TargetFilter = LP.Character
+		if not Mouse.Target then return end -- clicked the sky
+		smoothTeleport(Mouse.Hit.Position)
+	end)
+	tpTool = t
+	t.Parent = LP:FindFirstChildOfClass("Backpack") or LP:WaitForChild("Backpack")
+end
+
+local function setTP(on)
+	tpEnabled = on
+	if on then
+		giveTool()
+		say("Click TP ON: equip the tool, then click/tap the ground.")
+	else
+		removeTool()
+		if tpTween then tpTween:Cancel() end
+		local root = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+		if root then root.Anchored = false end
+		say("Click TP OFF")
+	end
+end
+
+track(LP.CharacterAdded:Connect(function()
+	if tpEnabled then
+		task.wait(0.5)
+		removeTool()
+		giveTool()
+	end
+end))
+
+---------------------------------------------------------------- Rows + command box
+local setNoclipToggle = makeToggle("Noclip", 50, setNoclip)
+local setTPToggle = makeToggle("Click TP Tool", 98, setTP)
+
 local box = Instance.new("TextBox")
 box.Size = UDim2.new(1, -28, 0, 36)
-box.Position = UDim2.fromOffset(14, 100)
-box.BackgroundColor3 = Color3.fromRGB(34, 34, 46)
+box.Position = UDim2.fromOffset(14, 148)
+box.BackgroundColor3 = ROW
 box.PlaceholderText = "!to name  |  !hide name  |  !unhide name"
 box.PlaceholderColor3 = Color3.fromRGB(130, 130, 150)
 box.Text = ""
@@ -131,26 +331,12 @@ box.TextColor3 = Color3.new(1, 1, 1)
 box.Parent = main
 corner(box, 10)
 local boxStroke = Instance.new("UIStroke", box)
-boxStroke.Color = Color3.fromRGB(120, 90, 255)
+boxStroke.Color = ACCENT
 boxStroke.Transparency = 1
 box.Focused:Connect(function() tween(boxStroke, 0.2, {Transparency = 0}) end)
 box.FocusLost:Connect(function() tween(boxStroke, 0.2, {Transparency = 1}) end)
-box.MouseEnter:Connect(function() tween(box, 0.2, {BackgroundColor3 = Color3.fromRGB(42, 42, 58)}) end)
-box.MouseLeave:Connect(function() tween(box, 0.2, {BackgroundColor3 = Color3.fromRGB(34, 34, 46)}) end)
-
-local out = Instance.new("TextLabel")
-out.Size = UDim2.new(1, -28, 0, 60)
-out.Position = UDim2.fromOffset(14, 146)
-out.BackgroundTransparency = 1
-out.Text = "K = open/close. Type a command and press Enter."
-out.Font = Enum.Font.Gotham
-out.TextSize = 12
-out.TextWrapped = true
-out.TextYAlignment = Enum.TextYAlignment.Top
-out.TextXAlignment = Enum.TextXAlignment.Left
-out.TextColor3 = Color3.fromRGB(170, 170, 190)
-out.Parent = main
-local function say(msg) out.Text = msg end
+box.MouseEnter:Connect(function() tween(box, 0.2, {BackgroundColor3 = ROW_HOVER}) end)
+box.MouseLeave:Connect(function() tween(box, 0.2, {BackgroundColor3 = ROW}) end)
 
 ---------------------------------------------------------------- Open / close
 local isOpen, busy = false, false
@@ -172,31 +358,71 @@ local function setOpen(state)
 	end)
 end
 
-closeBtn.MouseButton1Click:Connect(function() setOpen(false) end)
-UserInputService.InputBegan:Connect(function(input, processed)
+closeBtn.MouseButton1Click:Connect(function() sfx(CLICK_ID, 0.9) setOpen(false) end)
+track(UIS.InputBegan:Connect(function(input, processed)
 	if processed then return end
-	if input.KeyCode == Enum.KeyCode.K then setOpen(not isOpen) end
-end)
-setOpen(true) -- opens smoothly on execute
+	if input.KeyCode == Enum.KeyCode.K then
+		sfx(CLICK_ID, isOpen and 0.85 or 1.1)
+		setOpen(not isOpen)
+	end
+end))
 
----------------------------------------------------------------- Noclip
-local noclip = false
-sw.MouseButton1Click:Connect(function()
-	noclip = not noclip
-	tween(knob, 0.25, {Position = noclip and UDim2.fromOffset(25, 3) or UDim2.fromOffset(3, 3)}, Enum.EasingStyle.Back)
-	tween(sw, 0.25, {BackgroundColor3 = noclip and Color3.fromRGB(120, 90, 255) or Color3.fromRGB(70, 70, 90)})
+-- floating button (handy on mobile where there's no K key)
+local fab = Instance.new("TextButton")
+fab.Size = UDim2.fromOffset(38, 38)
+fab.AnchorPoint = Vector2.new(0, 0.5)
+fab.Position = UDim2.new(0, 12, 0.5, 0)
+fab.BackgroundColor3 = BG
+fab.Text = "K"
+fab.Font = Enum.Font.GothamBold
+fab.TextSize = 14
+fab.TextColor3 = Color3.new(1, 1, 1)
+fab.AutoButtonColor = false
+fab.Parent = gui
+corner(fab, 19)
+local fabStroke = Instance.new("UIStroke", fab)
+fabStroke.Color = ACCENT
+fabStroke.Thickness = 1.5
+hoverable(fab, BG, Color3.fromRGB(44, 40, 70))
+fab.MouseButton1Click:Connect(function()
+	sfx(CLICK_ID, isOpen and 0.85 or 1.1)
+	setOpen(not isOpen)
 end)
-RunService.Stepped:Connect(function()
-	if not noclip then return end
-	local char = LP.Character
-	if not char then return end
-	for _, p in ipairs(char:GetDescendants()) do
-		if p:IsA("BasePart") then p.CanCollide = false end
+
+-- animated border
+track(RunService.Heartbeat:Connect(function(dt)
+	if isOpen then grad.Rotation = (grad.Rotation + dt * 70) % 360 end
+end))
+
+---------------------------------------------------------------- Dragging (mouse + touch)
+local dragging, dragStart, startPos, dragInput
+handle.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = main.Position
+		tween(stroke, 0.2, {Thickness = 2.5})
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				dragging = false
+				tween(stroke, 0.2, {Thickness = 1.5})
+			end
+		end)
 	end
 end)
+handle.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+		dragInput = input
+	end
+end)
+track(UIS.InputChanged:Connect(function(input)
+	if dragging and input == dragInput then
+		local d = input.Position - dragStart
+		tween(main, 0.08, {Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)}, Enum.EasingStyle.Quad)
+	end
+end))
 
----------------------------------------------------------------- Name matching
--- exact > starts with > contains. Returns player, or nil + message.
+---------------------------------------------------------------- Name matching (exact > starts with > contains)
 local function findPlayer(query)
 	query = (query or ""):lower()
 	if query == "" then return nil, "Type a name." end
@@ -224,19 +450,9 @@ local function findPlayer(query)
 	return nil, "No player found for '" .. query .. "'."
 end
 
----------------------------------------------------------------- !to
-local function teleportTo(plr)
-	local myRoot = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
-	local theirRoot = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
-	if myRoot and theirRoot then
-		myRoot.CFrame = theirRoot.CFrame * CFrame.new(0, 0, 3)
-		return true
-	end
-	return false
-end
-
 ---------------------------------------------------------------- !hide (client-side only)
-local hidden = {} -- [UserId] = true
+local hidden = {}      -- [UserId] = true
+local origVolume = setmetatable({}, {__mode = "k"})
 
 local function applyHide(plr)
 	local char = plr.Character
@@ -247,13 +463,13 @@ local function applyHide(plr)
 			elseif d:IsA("Decal") or d:IsA("Texture") then
 				d.Transparency = 1
 			elseif d:IsA("Sound") then
+				if origVolume[d] == nil then origVolume[d] = d.Volume end
 				d.Volume = 0
 			elseif d:IsA("BillboardGui") then
 				d.Enabled = false
 			end
 		end
 	end
-	-- best-effort voice chat mute
 	pcall(function()
 		for _, d in ipairs(plr:GetDescendants()) do
 			if d:IsA("AudioDeviceInput") then d.Muted = true end
@@ -270,7 +486,7 @@ local function applyUnhide(plr)
 			elseif d:IsA("Decal") or d:IsA("Texture") then
 				if d.Name == "face" then d.Transparency = 0 end
 			elseif d:IsA("Sound") then
-				d.Volume = 0.5
+				d.Volume = origVolume[d] or 0.5
 			elseif d:IsA("BillboardGui") then
 				d.Enabled = true
 			end
@@ -283,7 +499,6 @@ local function applyUnhide(plr)
 	end)
 end
 
--- keep hidden players hidden (respawns, new sounds, etc.)
 task.spawn(function()
 	while gui.Parent do
 		for id in pairs(hidden) do
@@ -294,26 +509,23 @@ task.spawn(function()
 	end
 end)
 
--- hide chat from hidden players + hide your own "!" commands on your screen
 pcall(function()
 	TextChatService.OnIncomingMessage = function(msg)
 		local props = Instance.new("TextChatMessageProperties")
 		local src = msg.TextSource
-		if src then
-			if hidden[src.UserId] or (src.UserId == LP.UserId and msg.Text:sub(1, 1) == "!") then
-				props.Text = ""
-			end
+		if src and (hidden[src.UserId] or (src.UserId == LP.UserId and msg.Text:sub(1, 1) == "!")) then
+			props.Text = ""
 		end
 		return props
 	end
 end)
 
----------------------------------------------------------------- Command handler
+---------------------------------------------------------------- Commands
 local lastRun, lastText = 0, ""
 local function runCommand(text)
-	text = (text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	text = ((text or ""):gsub("^%s+", ""):gsub("%s+$", ""))
 	if text:sub(1, 1) ~= "!" then return end
-	if text == lastText and tick() - lastRun < 0.4 then return end -- dedupe chat hooks
+	if text == lastText and tick() - lastRun < 0.4 then return end
 	lastText, lastRun = text, tick()
 
 	local cmd, arg = text:match("^!(%S+)%s*(.-)$")
@@ -322,7 +534,14 @@ local function runCommand(text)
 	if cmd == "to" then
 		local plr, err = findPlayer(arg)
 		if not plr then return say(err) end
-		say(teleportTo(plr) and ("Teleported to " .. plr.Name) or (plr.Name .. " has no character yet."))
+		local myRoot = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+		local theirRoot = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+		if myRoot and theirRoot then
+			myRoot.CFrame = theirRoot.CFrame * CFrame.new(0, 0, 3)
+			say("Teleported to " .. plr.Name)
+		else
+			say(plr.Name .. " has no character yet.")
+		end
 	elseif cmd == "hide" then
 		local plr, err = findPlayer(arg)
 		if not plr then return say(err) end
@@ -340,14 +559,28 @@ local function runCommand(text)
 	end
 end
 
--- from the panel box
 box.FocusLost:Connect(function(enter)
 	if enter then
+		sfx(CLICK_ID, 1.2)
 		runCommand(box.Text)
 		box.Text = ""
 	end
 end)
+pcall(function() track(TextChatService.SendingMessage:Connect(function(m) runCommand(m.Text) end)) end)
+pcall(function() track(LP.Chatted:Connect(runCommand)) end)
 
--- from in-game chat (new + legacy chat)
-pcall(function() TextChatService.SendingMessage:Connect(function(m) runCommand(m.Text) end) end)
-pcall(function() LP.Chatted:Connect(runCommand) end)
+---------------------------------------------------------------- Cleanup for re-execution
+env.MiniPanelCleanup = function()
+	for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+	if noclipConn then noclipConn:Disconnect() end
+	for p in pairs(touched) do if p.Parent then p.CanCollide = true end end
+	removeTool()
+	for id in pairs(hidden) do
+		local plr = Players:GetPlayerByUserId(id)
+		if plr then applyUnhide(plr) end
+	end
+	pcall(function() TextChatService.OnIncomingMessage = nil end)
+	gui:Destroy()
+end
+
+setOpen(true) -- smooth open on execute
