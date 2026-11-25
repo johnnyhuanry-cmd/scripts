@@ -1,5 +1,5 @@
 loadstring([==[
--- Headless Hub v3.0
+-- Headless Hub v3.0.1
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UIS = game:GetService("UserInputService")
@@ -1245,7 +1245,8 @@ task.spawn(function()
 	end
 end)
 
----------------------------------------------------------------- GUI
+---------------------------------------------------------------- GUI (built inside its own function so it has its own local limit)
+local function buildGui()
 local W, H = 580, 400
 local win = new("Frame", {Name = "Window", Size = UDim2.fromOffset(W, H), AnchorPoint = Vector2.new(.5, .5), Position = UDim2.fromScale(.5, .5), BackgroundTransparency = 1, Visible = false}, gui)
 local userScale = new("UIScale", {Scale = math.clamp(((workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize.Y) or 700) / 640, .6, 1)}, win)
@@ -1372,7 +1373,7 @@ local function ripple(c)
 	Debris:AddItem(r, .6)
 end
 local function card(parent, h, noHit)
-	local c = new("Frame", {Size = UDim2.new(1, 0, 0, h), BackgroundColor3 = THEME.card, ClipsDescendants = true, LayoutOrder = #parent:GetChildren()}, parent)
+	local c = new("Frame", {Size = UDim2.new(1, 0, 0, h), BackgroundColor3 = THEME.card, ClipsDescendants = true, LayoutOrder = #parent:GetChildren() + 1}, parent)
 	corner(c, 10)
 	local st = new("UIStroke", {Thickness = 1.2, Transparency = 1}, c)
 	reg(st, "Color")
@@ -1487,7 +1488,7 @@ local function chips(parent, title, opts, selected, cb)
 end
 local function button(parent, text, cb, danger)
 	local b = new("TextButton", {Size = UDim2.new(1, 0, 0, 40), BackgroundColor3 = danger and Color3.fromRGB(190, 50, 70) or THEME.accent, Text = text,
-		Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = Color3.new(1, 1, 1), AutoButtonColor = false, LayoutOrder = #parent:GetChildren(), ClipsDescendants = true}, parent)
+		Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = Color3.new(1, 1, 1), AutoButtonColor = false, LayoutOrder = #parent:GetChildren() + 1, ClipsDescendants = true}, parent)
 	corner(b, 10)
 	if not danger then reg(b, "BackgroundColor3") end
 	local s = new("UIScale", {}, b)
@@ -1543,7 +1544,7 @@ section(pgPlayers, "PLAYERS")
 local sc2 = card(pgPlayers, 38, true)
 local searchBox = new("TextBox", {Position = UDim2.fromOffset(10, 5), Size = UDim2.new(1, -20, 0, 28), BackgroundTransparency = 1, PlaceholderText = "search players...",
 	PlaceholderColor3 = THEME.sub, Text = "", ClearTextOnFocus = false, Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = THEME.text, TextXAlignment = Enum.TextXAlignment.Left}, sc2)
-local listHolder = new("Frame", {Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = 999}, pgPlayers.Parent == nil and gui or pgPlayers)
+local listHolder = new("Frame", {Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = 999}, pgPlayers)
 new("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}, listHolder)
 local emptyLbl = L(pgPlayers, "No other players in this server", 12, Enum.Font.Gotham, THEME.sub, UDim2.new(), UDim2.new(1, 0, 0, 24), Enum.TextXAlignment.Center)
 emptyLbl.LayoutOrder = 1000
@@ -1560,7 +1561,7 @@ local function miniBtn(parent, text, xRight, cb)
 end
 local searchText = ""
 local function playerRow(plr)
-	local r = new("Frame", {Size = UDim2.new(1, 0, 0, 50), BackgroundColor3 = THEME.card, LayoutOrder = #listHolder:GetChildren()}, listHolder)
+	local r = new("Frame", {Size = UDim2.new(1, 0, 0, 50), BackgroundColor3 = THEME.card, LayoutOrder = #listHolder:GetChildren() + 1}, listHolder)
 	corner(r, 10)
 	local av = new("ImageLabel", {Size = UDim2.fromOffset(34, 34), Position = UDim2.fromOffset(8, 8), BackgroundColor3 = THEME.off,
 		Image = ("rbxthumb://type=AvatarHeadShot&id=%d&w=48&h=48"):format(plr.UserId)}, r)
@@ -1641,7 +1642,7 @@ peersChanged = function()
 	refreshPlayers()
 end
 
----------------------------------------------------------------- open / close / drag / keys
+-- open / close / drag / keys
 local isOpen, busy, minimized = false, false, false
 local function setOpen(state)
 	if busy or state == isOpen then return end
@@ -1783,6 +1784,8 @@ do
 		say("Headless Hub loaded. Press K to hide")
 	end)
 end
+end
+buildGui()
 
 ---------------------------------------------------------------- cleanup for re-execution
 env.MiniPanelCleanup = function()
