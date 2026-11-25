@@ -1,5 +1,5 @@
 loadstring([==[
--- Headless Hub v3.1  (nametags + far markers)
+-- Headless Hub v3.2  (owner-only nametag access)
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UIS = game:GetService("UserInputService")
@@ -18,7 +18,7 @@ if env.MiniPanelCleanup then pcall(env.MiniPanelCleanup) end
 local conns = {}
 local function track(c) table.insert(conns, c) return c end
 local sendState -- assigned in the sync section
-local NT = {}    -- nametag + marker module (filled in below)
+local NT = {}    -- nametag + marker + owner module (filled in below)
 
 local LASER_ID = ""            -- optional: your own laser loop, e.g. "rbxassetid://123456789"
 local LASER_RANGE = 450
@@ -29,7 +29,7 @@ local SND_HISS = "rbxasset://sounds/Rocket whoosh 01.wav"
 
 -- icons (emoji). If one ever shows as a square on your device, swap it here.
 local ICONS = {
-	move = "🚀", combat = "🔥", players = "👥", settings = "⚙️",
+	move = "🚀", combat = "🔥", players = "👥", settings = "⚙️", owner = "👑",
 	fly = "🚀", speed = "💨", cape = "🎭", travel = "🌍", noclip = "👻", tp = "📍",
 	laser = "👀", color = "🎨", width = "📏", volume = "🔊", ground = "💥",
 	chat = "💬", hub = "⚡", hubusers = "📡", size = "🔍", net = "🌐", script = "🔧", unload = "🔌",
@@ -71,7 +71,7 @@ local CFG = {
 	sync = true, ground = true, cape = true,
 	laserColor = Color3.fromRGB(255, 30, 20), laserWidth = 1, sfxVol = 1,
 	flySpeed = 60,
-	nametags = true, markers = true, markDist = 100, tagHeight = 3.9, previewCustom = false,
+	nametags = true, markers = true, markDist = 100, tagHeight = 3.9,
 }
 local THEME = {
 	bg = Color3.fromRGB(15, 15, 23), panel = Color3.fromRGB(21, 21, 31), card = Color3.fromRGB(29, 29, 43),
@@ -1049,6 +1049,11 @@ end))
 
 ---------------------------------------------------------------- Sync with other hub users (hidden chat packets)
 local Z0, Z1 = "\u{200B}", "\u{200C}"
+local function zwEncode(bits)
+	local out = {}
+	for i, b in ipairs(bits) do out[i] = b == 1 and Z1 or Z0 end
+	return table.concat(out)
+end
 local function encodePacket(fly, laser, hello, yaw, pitch)
 	local bits = {1, 0, 1, 1, 0, 1, fly and 1 or 0, laser and 1 or 0, hello and 1 or 0}
 	local y8 = math.floor(((yaw % (2 * math.pi)) / (2 * math.pi)) * 256) % 256
@@ -1058,12 +1063,11 @@ local function encodePacket(fly, laser, hello, yaw, pitch)
 	local par = 0
 	for _, b in ipairs(bits) do par = bit32.bxor(par, b) end
 	bits[#bits + 1] = par
-	local out = {}
-	for i, b in ipairs(bits) do out[i] = b == 1 and Z1 or Z0 end
-	return table.concat(out)
+	return zwEncode(bits)
 end
+-- understands two packet kinds: "state" (fly/laser/aim) and "grant" (owner nametag changes)
 local function decodePacket(text)
-	if type(text) ~= "string" or #text < 20 or #text > 120 then return nil end
+	if type(text) ~= "string" or #text < 20 or #text > 700 then return nil end
 	local bits = {}
 	local ok = pcall(function()
 		for _, cp in utf8.codes(text) do
@@ -1072,19 +1076,37 @@ local function decodePacket(text)
 			else bits = nil return end
 		end
 	end)
-	if not ok or not bits or #bits ~= 24 then return nil end
-	local magic = {1, 0, 1, 1, 0, 1}
-	for i = 1, 6 do if bits[i] ~= magic[i] then return nil end end
+	if not ok or not bits then return nil end
+	local n = #bits
+	if n < 24 then return nil end
 	local par = 0
-	for i = 1, 23 do par = bit32.bxor(par, bits[i]) end
-	if par ~= bits[24] then return nil end
+	for i = 1, n - 1 do par = bit32.bxor(par, bits[i]) end
+	if par ~= bits[n] then return nil end
 	local function num(a, b)
 		local v = 0
 		for i = a, b do v = v * 2 + bits[i] end
 		return v
 	end
-	return {fly = bits[7] == 1, laser = bits[8] == 1, hello = bits[9] == 1,
-		yaw = num(10, 17) / 256 * 2 * math.pi, pitch = num(18, 23) / 63 * math.pi - math.pi / 2}
+	local function starts(m)
+		for i = 1, 6 do if bits[i] ~= m[i] then return false end end
+		return true
+	end
+	if n == 24 and starts({1, 0, 1, 1, 0, 1}) then
+		return {kind = "state", fly = bits[7] == 1, laser = bits[8] == 1, hello = bits[9] == 1,
+			yaw = num(10, 17) / 256 * 2 * math.pi, pitch = num(18, 23) / 63 * math.pi - math.pi / 2}
+	end
+	if n >= 54 and starts({1, 1, 0, 0, 1, 0}) then
+		local len = num(49, 53)
+		if len > 20 or n ~= 54 + len * 7 then return nil end
+		local uid = 0
+		for i = 9, 48 do uid = uid * 2 + bits[i] end
+		local chars = {}
+		for i = 1, len do
+			chars[i] = string.char(math.min(num(54 + (i - 1) * 7, 53 + i * 7) + 32, 126))
+		end
+		return {kind = "grant", op = num(7, 8), uid = uid, name = table.concat(chars)}
+	end
+	return nil
 end
 local function chatSend(msg)
 	local ok = pcall(function()
@@ -1142,6 +1164,7 @@ local function handlePacket(uid, pkt)
 	-- everyone answers a newcomer's hello so each hub user learns who else has the script
 	if pkt.hello then
 		task.delay(rng:NextNumber(.8, 6), function() sendState() end)
+		if NT.onHello then NT.onHello() end
 	end
 end
 
@@ -1230,7 +1253,7 @@ pcall(function()
 			if pkt then
 				props.Text = ""
 				props.PrefixText = ""
-				if src.UserId ~= LP.UserId then handlePacket(src.UserId, pkt) end
+				if src.UserId ~= LP.UserId and NT.route then NT.route(src.UserId, pkt) end
 				return props
 			end
 			if hidden[src.UserId] or (src.UserId == LP.UserId and msg.Text:sub(1, 1) == "!") then props.Text = "" end
@@ -1241,7 +1264,7 @@ end)
 local function hookLegacy(plr)
 	track(plr.Chatted:Connect(function(m)
 		local pkt = decodePacket(m)
-		if pkt and plr ~= LP then handlePacket(plr.UserId, pkt) end
+		if pkt and plr ~= LP and NT.route then NT.route(plr.UserId, pkt) end
 	end))
 end
 for _, p in ipairs(Players:GetPlayers()) do hookLegacy(p) end
@@ -1258,11 +1281,12 @@ task.spawn(function()
 	end
 end)
 
----------------------------------------------------------------- Nametags + far markers (only hub users see these)
--- Who gets the red/white snow "Hub Tr3y" tag: usernames (any case) or UserIds. Everyone else gets the grey "Hub User" tag.
-NT.users = {"trey"}
-NT.name = "Hub Tr3y"
-NT.subjects = {}
+---------------------------------------------------------------- Nametags, far markers and owner access
+NT.OWNER = 9755612419                   -- the ONLY account that can give / change custom nametags
+NT.FILE = "HeadlessHub_nametags.json"   -- local cache of who has a custom nametag
+NT.REMOTE_URL = ""                      -- optional permanent list (raw GitHub URL of {"users":{"1234567890":""}})
+NT.grants, NT.remote, NT.hooks, NT.queue, NT.subjects = {}, {}, {}, {}, {}
+NT.lastFull, NT.fullPending = -999, false
 NT.W, NT.H = 224, 50
 NT.RED = ColorSequence.new({
 	ColorSequenceKeypoint.new(0, Color3.fromRGB(196, 18, 38)), ColorSequenceKeypoint.new(.4, Color3.fromRGB(228, 52, 66)),
@@ -1273,17 +1297,187 @@ NT.GREY = ColorSequence.new({
 	ColorSequenceKeypoint.new(.8, Color3.fromRGB(232, 232, 238)), ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 255, 255)),
 })
 
-function NT.isCustom(plr, isSelf)
-	for _, v in ipairs(NT.users) do
-		if type(v) == "number" then
-			if plr.UserId == v then return true end
-		elseif plr.Name:lower() == tostring(v):lower() then
-			return true
-		end
-	end
-	return (isSelf and CFG.previewCustom) or false
+-- ---- who has a custom nametag + what it says
+function NT.entry(uid)
+	local g = NT.grants[uid]
+	if g ~= nil then return g end
+	return NT.remote[uid]
+end
+function NT.isCustom(plr)
+	return plr.UserId == NT.OWNER or NT.entry(plr.UserId) ~= nil
+end
+function NT.tagText(plr)
+	local e = NT.entry(plr.UserId)
+	local nm = (e and e ~= "") and e or (plr.UserId == NT.OWNER and "Tr3y" or plr.DisplayName)
+	return "Hub " .. nm
+end
+function NT.changed()
+	for _, f in ipairs(NT.hooks) do pcall(f) end
 end
 
+-- ---- local cache (executor file functions)
+function NT.save()
+	if not writefile then return end
+	local t = {}
+	for uid, name in pairs(NT.grants) do t[tostring(uid)] = name end
+	pcall(function() writefile(NT.FILE, game:GetService("HttpService"):JSONEncode(t)) end)
+end
+function NT.load()
+	if not (readfile and isfile) then return end
+	pcall(function()
+		if isfile(NT.FILE) then
+			local t = game:GetService("HttpService"):JSONDecode(readfile(NT.FILE))
+			for k, v in pairs(t) do
+				local id = tonumber(k)
+				if id then NT.grants[id] = type(v) == "string" and v or "" end
+			end
+		end
+	end)
+end
+NT.load()
+task.spawn(function()
+	if NT.REMOTE_URL == "" then return end
+	pcall(function()
+		local data = game:GetService("HttpService"):JSONDecode(game:HttpGet(NT.REMOTE_URL))
+		for k, v in pairs(data.users or {}) do
+			local id = tonumber(k)
+			if id then NT.remote[id] = type(v) == "string" and v or "" end
+		end
+		NT.changed()
+	end)
+end)
+
+-- ---- grant packets (only ever accepted when the chat sender is the owner)
+function NT.encodeGrant(op, uid, name)
+	name = name or ""
+	local bits = {1, 1, 0, 0, 1, 0, bit32.extract(op, 1), bit32.extract(op, 0)}
+	for i = 39, 0, -1 do bits[#bits + 1] = math.floor(uid / 2 ^ i) % 2 end
+	local n = math.min(#name, 20)
+	for i = 4, 0, -1 do bits[#bits + 1] = bit32.extract(n, i) end
+	for i = 1, n do
+		local c = name:byte(i) - 32
+		for k = 6, 0, -1 do bits[#bits + 1] = bit32.extract(c, k) end
+	end
+	local par = 0
+	for _, b in ipairs(bits) do par = bit32.bxor(par, b) end
+	bits[#bits + 1] = par
+	return zwEncode(bits)
+end
+function NT.send(op, uid, name)
+	if LP.UserId ~= NT.OWNER or not CFG.sync then return end
+	table.insert(NT.queue, NT.encodeGrant(op, uid, name))
+end
+function NT.queueFull()
+	if LP.UserId ~= NT.OWNER then return end
+	table.clear(NT.queue)
+	table.insert(NT.queue, NT.encodeGrant(2, 0, ""))
+	for uid, name in pairs(NT.grants) do
+		if uid ~= NT.OWNER then table.insert(NT.queue, NT.encodeGrant(0, uid, name)) end
+	end
+end
+function NT.onHello()
+	if LP.UserId ~= NT.OWNER or NT.fullPending or os.clock() - NT.lastFull < 40 then return end
+	NT.fullPending = true
+	task.delay(rng:NextNumber(3, 6), function()
+		NT.fullPending = false
+		NT.lastFull = os.clock()
+		NT.queueFull()
+	end)
+end
+function NT.handleGrant(senderId, pkt)
+	if senderId ~= NT.OWNER or LP.UserId == NT.OWNER then return end
+	if pkt.op == 0 then NT.grants[pkt.uid] = pkt.name or ""
+	elseif pkt.op == 1 then NT.grants[pkt.uid] = nil
+	elseif pkt.op == 2 then table.clear(NT.grants) end
+	NT.save()
+	NT.changed()
+end
+function NT.route(uid, pkt)
+	if pkt.kind == "state" then handlePacket(uid, pkt) else NT.handleGrant(uid, pkt) end
+end
+-- sends one queued packet at a time, never faster than chat allows
+task.spawn(function()
+	while gui.Parent do
+		if CFG.sync and #NT.queue > 0 and not pending and os.clock() - lastSend >= 1.25 then
+			lastSend = os.clock()
+			chatSend(table.remove(NT.queue, 1))
+		end
+		task.wait(.3)
+	end
+end)
+if LP.UserId == NT.OWNER then task.delay(8, NT.queueFull) end
+
+-- ---- owner actions (every one of these refuses unless you are the owner)
+function NT.parseId(s)
+	s = tostring(s or ""):gsub("%s", "")
+	if not s:match("^%d+$") or #s > 12 then return nil end
+	return tonumber(s)
+end
+function NT.cleanName(s)
+	s = tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	if #s == 0 or #s > 20 then return nil end
+	for i = 1, #s do
+		local b = s:byte(i)
+		if b < 32 or b > 126 then return nil end
+	end
+	return s
+end
+function NT.ownerGive(idText, nameText)
+	if LP.UserId ~= NT.OWNER then return false, "Unsuccessful" end
+	local uid = NT.parseId(idText)
+	if not uid then return false, "Unsuccessful: enter a valid user ID" end
+	local name
+	if tostring(nameText or ""):match("%S") then
+		name = NT.cleanName(nameText)
+		if not name then return false, "Unsuccessful: name must be 1-20 letters, numbers or symbols" end
+	end
+	NT.grants[uid] = name or ""
+	NT.save()
+	NT.send(0, uid, name or "")
+	NT.changed()
+	return true, "Successful"
+end
+function NT.ownerSetName(idText, nameText)
+	if LP.UserId ~= NT.OWNER then return false, "Unsuccessful" end
+	local uid = NT.parseId(idText)
+	if not uid then return false, "Unsuccessful: enter a valid user ID" end
+	if uid ~= NT.OWNER and NT.entry(uid) == nil then return false, "Unsuccessful: give them a nametag first" end
+	local name = ""
+	if tostring(nameText or ""):match("%S") then
+		name = NT.cleanName(nameText)
+		if not name then return false, "Unsuccessful: name must be 1-20 letters, numbers or symbols" end
+	end
+	NT.grants[uid] = name
+	NT.save()
+	NT.send(0, uid, name)
+	NT.changed()
+	return true, name == "" and "Successful: back to their display name" or "Successful"
+end
+function NT.ownerRemove(idText)
+	if LP.UserId ~= NT.OWNER then return false, "Unsuccessful" end
+	local uid = NT.parseId(idText)
+	if not uid then return false, "Unsuccessful: enter a valid user ID" end
+	if uid == NT.OWNER then return false, "Unsuccessful: the owner always has it" end
+	if NT.grants[uid] == nil then return false, "Unsuccessful: they don't have one" end
+	NT.grants[uid] = nil
+	NT.save()
+	NT.send(1, uid, "")
+	NT.changed()
+	return true, "Successful"
+end
+function NT.copyList()
+	if LP.UserId ~= NT.OWNER then return false, "Unsuccessful" end
+	local t = {}
+	for uid, name in pairs(NT.grants) do
+		if uid ~= NT.OWNER then t[tostring(uid)] = name end
+	end
+	local ok = pcall(function()
+		setclipboard(game:GetService("HttpService"):JSONEncode({users = t}))
+	end)
+	return ok, ok and "Copied. Paste it into your GitHub list file" or "Unsuccessful: your executor has no clipboard"
+end
+
+-- ---- snow + typing helpers
 function NT.makeFlakes(parent, n, x0, x1, h, zi, smax)
 	local fl = {}
 	for i = 1, n do
@@ -1307,13 +1501,21 @@ function NT.stepFlakes(fl, dt, t)
 		s.f.Position = UDim2.fromOffset(s.x + math.sin(t * 2 + s.ph) * s.amp, s.y)
 	end
 end
+function NT.len(str) return utf8.len(str) or #str end
+function NT.sub(str, n)
+	local len = utf8.len(str)
+	if not len then return str:sub(1, n) end
+	if n >= len then return str end
+	if n <= 0 then return "" end
+	return str:sub(1, utf8.offset(str, n + 1) - 1)
+end
 
--- the billboard nametag above a hub user's head
+-- ---- the billboard nametag above a hub user's head
 NT.Tag = {}
 NT.Tag.__index = NT.Tag
 function NT.Tag.new(plr, head, custom)
 	local W, H = NT.W, NT.H
-	local self = setmetatable({plr = plr, custom = custom, phase = rng:NextNumber(0, 6), ts = {phase = "type", n = 0, timer = 0}}, NT.Tag)
+	local self = setmetatable({plr = plr, custom = custom, phase = rng:NextNumber(0, 6), ts = {phase = "type", n = 0, timer = 0, full = ""}}, NT.Tag)
 	local bb = new("BillboardGui", {Name = "HubTag", Adornee = head, Size = UDim2.fromOffset(W, H), AlwaysOnTop = true, LightInfluence = 0,
 		StudsOffset = Vector3.new(0, CFG.tagHeight, 0), MaxDistance = 1000000, Enabled = false}, head)
 	self.bb = bb
@@ -1323,14 +1525,11 @@ function NT.Tag.new(plr, head, custom)
 	new("UIStroke", {Color = custom and Color3.fromRGB(8, 8, 10) or Color3.fromRGB(34, 34, 40), Thickness = 2.2}, pill)
 	self.grad = new("UIGradient", {Color = custom and NT.RED or NT.GREY}, pill)
 	self.scale = new("UIScale", {}, pill)
-
 	self.shine = new("Frame", {Size = UDim2.fromOffset(14, 70), AnchorPoint = Vector2.new(.5, .5), Rotation = 20,
 		BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = .72, BorderSizePixel = 0, ZIndex = 2}, pill)
-
 	if custom then
 		self.flakes = NT.makeFlakes(pill, 16, 46, 190, 42, 3, 5)
 	end
-
 	local ring = new("Frame", {Size = UDim2.fromOffset(36, 36), Position = UDim2.fromOffset(3, 3),
 		BackgroundColor3 = custom and Color3.fromRGB(205, 24, 42) or Color3.fromRGB(140, 140, 150), BorderSizePixel = 0, ZIndex = 4}, pill)
 	corner(ring, 18)
@@ -1338,10 +1537,9 @@ function NT.Tag.new(plr, head, custom)
 	local av = new("ImageLabel", {Size = UDim2.fromOffset(30, 30), Position = UDim2.fromOffset(3, 3), BackgroundColor3 = Color3.fromRGB(230, 230, 236),
 		Image = ("rbxthumb://type=AvatarHeadShot&id=%d&w=48&h=48"):format(plr.UserId), BorderSizePixel = 0, ZIndex = 5}, ring)
 	corner(av, 15)
-
 	self.l1 = new("TextLabel", {BackgroundTransparency = 1, Position = UDim2.fromOffset(46, 2), Size = UDim2.new(1, -52, 0, 22),
 		Text = custom and "" or "Hub User", Font = Enum.Font.GothamBlack, TextSize = 17, TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = custom and Color3.fromRGB(28, 8, 14) or Color3.fromRGB(36, 36, 44),
+		TextColor3 = custom and Color3.fromRGB(28, 8, 14) or Color3.fromRGB(36, 36, 44), TextTruncate = Enum.TextTruncate.AtEnd,
 		TextStrokeColor3 = Color3.new(1, 1, 1), TextStrokeTransparency = .55, ZIndex = 6}, pill)
 	new("TextLabel", {BackgroundTransparency = 1, Position = UDim2.fromOffset(46, 23), Size = UDim2.new(1, -52, 0, 15),
 		Text = "@" .. plr.Name, Font = Enum.Font.GothamMedium, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left,
@@ -1358,15 +1556,20 @@ function NT.Tag:update(dt, t, near, dist)
 	local f = (t * .4 + self.phase) % 2.8
 	self.shine.Position = UDim2.fromOffset(-30 + f * 270, 21)
 	if self.custom then
-		-- types "Hub Tr3y" slowly, holds, deletes it letter by letter, then types it again
+		-- types "Hub <name>" slowly, holds, deletes it letter by letter, then types it again
 		local s = self.ts
-		local name = NT.name
+		local full = NT.tagText(self.plr)
+		local total = NT.len(full)
+		if s.full ~= full then
+			s.full = full
+			s.n = math.min(s.n, total)
+		end
 		s.timer += dt
 		if s.phase == "type" then
 			if s.timer >= .17 then
 				s.timer = 0
 				s.n += 1
-				if s.n >= #name then s.n = #name s.phase = "hold" end
+				if s.n >= total then s.n = total s.phase = "hold" end
 			end
 		elseif s.phase == "hold" then
 			if s.timer >= 1.8 then s.phase = "delete" s.timer = 0 end
@@ -1380,7 +1583,7 @@ function NT.Tag:update(dt, t, near, dist)
 			if s.timer >= .6 then s.phase = "type" s.timer = 0 end
 		end
 		local blink = math.floor(t * 2.6) % 2 == 0
-		self.l1.Text = name:sub(1, s.n) .. (blink and "|" or "")
+		self.l1.Text = NT.sub(full, s.n) .. (blink and "|" or "")
 		NT.stepFlakes(self.flakes, dt, t)
 	end
 end
@@ -1388,7 +1591,7 @@ function NT.Tag:destroy()
 	pcall(function() self.bb:Destroy() end)
 end
 
--- the little circle shown for far-away hub users; click it to teleport to them
+-- ---- the little circle shown for far-away hub users; click it to teleport to them
 NT.Marker = {}
 NT.Marker.__index = NT.Marker
 function NT.Marker.new(plr, custom)
@@ -1467,7 +1670,7 @@ function NT.step(dt)
 		local head = char and char:FindFirstChild("Head")
 		local hum = char and char:FindFirstChildOfClass("Humanoid")
 		local ok = head and hum and hum.Health > 0 and not hidden[uid] and (CFG.nametags or CFG.markers)
-		local custom = NT.isCustom(plr, isSelf)
+		local custom = NT.isCustom(plr)
 		local s = NT.subjects[uid]
 		if s and (not ok or s.char ~= char or s.custom ~= custom) then
 			NT.destroy(uid)
@@ -1537,7 +1740,7 @@ local function L(parent, text, size, font, color, pos, sz, align)
 		TextXAlignment = align or Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd}, parent)
 end
 L(top, "HEADLESS HUB", 15, Enum.Font.GothamBlack, THEME.text, UDim2.fromOffset(52, 7), UDim2.fromOffset(180, 18))
-L(top, "v3.1  ·  Superman Edition", 10, Enum.Font.GothamMedium, THEME.sub, UDim2.fromOffset(52, 24), UDim2.fromOffset(180, 14))
+L(top, "v3.2  ·  Superman Edition", 10, Enum.Font.GothamMedium, THEME.sub, UDim2.fromOffset(52, 24), UDim2.fromOffset(180, 14))
 
 local hubPill = new("Frame", {Size = UDim2.fromOffset(112, 24), AnchorPoint = Vector2.new(1, .5), Position = UDim2.new(1, -90, .5, 0), BackgroundColor3 = THEME.bg}, top)
 corner(hubPill, 12)
@@ -1564,7 +1767,7 @@ L(footer, "K  hide      F  fly      L  laser", 11, Enum.Font.GothamMedium, THEME
 local fpsLbl = L(footer, "FPS 60", 11, Enum.Font.GothamBold, THEME.sub, UDim2.new(1, -90, 0, 0), UDim2.fromOffset(76, 28), Enum.TextXAlignment.Right)
 
 -- nav
-local navItems = {{"Movement", ICONS.move}, {"Combat", ICONS.combat}, {"Players", ICONS.players}, {"Settings", ICONS.settings}}
+local navItems = {{"Movement", ICONS.move}, {"Combat", ICONS.combat}, {"Players", ICONS.players}, {"Settings", ICONS.settings}, {"Owner", ICONS.owner}}
 local navBtns, pages, current = {}, {}, nil
 local pill = new("Frame", {Size = UDim2.new(1, -16, 0, 38), Position = UDim2.fromOffset(8, 12), BackgroundTransparency = .82}, sidebar)
 corner(pill, 10)
@@ -1621,7 +1824,7 @@ local meAv = new("ImageLabel", {Size = UDim2.fromOffset(32, 32), Position = UDim
 	Image = ("rbxthumb://type=AvatarHeadShot&id=%d&w=48&h=48"):format(LP.UserId)}, me)
 corner(meAv, 16)
 L(me, LP.DisplayName, 12, Enum.Font.GothamBold, THEME.text, UDim2.fromOffset(46, 6), UDim2.new(1, -50, 0, 16))
-L(me, "ready", 10, Enum.Font.Gotham, Color3.fromRGB(90, 230, 140), UDim2.fromOffset(46, 22), UDim2.new(1, -50, 0, 14))
+L(me, LP.UserId == NT.OWNER and "owner" or "ready", 10, Enum.Font.Gotham, Color3.fromRGB(90, 230, 140), UDim2.fromOffset(46, 22), UDim2.new(1, -50, 0, 14))
 
 -- widgets
 local function ripple(c)
@@ -1886,10 +2089,14 @@ local markT = toggle(pgSet, ICONS.mark .. " Far markers", "Click a circle to tel
 markT.silent(true)
 slider(pgSet, ICONS.mark .. " Marker distance", 40, 400, CFG.markDist, function(v) return math.floor(v + .5) .. "m" end, function(v) CFG.markDist = math.floor(v + .5) end)
 slider(pgSet, ICONS.size .. " Tag height", 2, 7, CFG.tagHeight, function(v) return ("%.1f"):format(v) end, function(v) CFG.tagHeight = v end)
-local prevT = toggle(pgSet, ICONS.snow .. " Preview custom tag", "Local preview on you. Others see it only if you are on the custom list", function(v) CFG.previewCustom = v end)
 local tagCard = card(pgSet, 52, true)
-L(tagCard, NT.isCustom(LP, false) and (ICONS.snow .. " Your nametag: Custom (red + snow)") or (ICONS.tag .. " Your nametag: Default (grey)"), 13, Enum.Font.GothamBold, THEME.text, UDim2.fromOffset(14, 8), UDim2.new(1, -28, 0, 18))
-L(tagCard, "You are @" .. LP.Name .. "  (id " .. LP.UserId .. ").  Add it to NT.users in the script to get the custom tag.", 11, Enum.Font.Gotham, THEME.sub, UDim2.fromOffset(14, 28), UDim2.new(1, -28, 0, 16))
+local tagStatus = L(tagCard, "", 13, Enum.Font.GothamBold, THEME.text, UDim2.fromOffset(14, 8), UDim2.new(1, -28, 0, 18))
+L(tagCard, "Custom nametags can only be given out by the owner", 11, Enum.Font.Gotham, THEME.sub, UDim2.fromOffset(14, 28), UDim2.new(1, -28, 0, 16))
+local function refreshTagStatus()
+	tagStatus.Text = NT.isCustom(LP) and (ICONS.snow .. " Your nametag: Custom (red + snow)") or (ICONS.tag .. " Your nametag: Default (grey)")
+end
+refreshTagStatus()
+table.insert(NT.hooks, refreshTagStatus)
 
 section(pgSet, ICONS.net .. "  MULTIPLAYER")
 local syncT = toggle(pgSet, ICONS.net .. " Share with hub users", "Others running this script see your cape, trail, pose and lasers", function(v)
@@ -1908,6 +2115,87 @@ L(statusCard, "Sync runs through game chat, so everyone needs the script and cha
 section(pgSet, ICONS.script .. "  SCRIPT")
 button(pgSet, ICONS.unload .. "  Unload Headless Hub", function() if env.MiniPanelCleanup then env.MiniPanelCleanup() end end, true)
 
+-- Owner page (anyone can open it, but only the owner's account can actually give or change nametags)
+local pgOwner = makePage("Owner")
+section(pgOwner, ICONS.owner .. "  NAMETAG ACCESS")
+local function inputBox(parent, placeholder, y)
+	local b = new("TextBox", {Position = UDim2.fromOffset(14, y), Size = UDim2.new(1, -28, 0, 34), BackgroundColor3 = THEME.bg, PlaceholderText = placeholder,
+		PlaceholderColor3 = THEME.sub, Text = "", ClearTextOnFocus = false, Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = THEME.text,
+		TextXAlignment = Enum.TextXAlignment.Left}, parent)
+	corner(b, 9)
+	pad(b, 12, 0, 12, 0)
+	local st = new("UIStroke", {Thickness = 1.3, Color = THEME.off, Transparency = .5}, b)
+	b.Focused:Connect(function() tween(st, .2, {Color = THEME.accent, Transparency = 0}) end)
+	b.FocusLost:Connect(function() tween(st, .2, {Color = THEME.off, Transparency = .5}) end)
+	return b
+end
+local function obtn(parent, text, pos, size, cb, color)
+	local b = new("TextButton", {Position = pos, Size = size, BackgroundColor3 = color or THEME.accent, Text = text, Font = Enum.Font.GothamBold, TextSize = 13,
+		TextColor3 = Color3.new(1, 1, 1), AutoButtonColor = false, ClipsDescendants = true}, parent)
+	corner(b, 9)
+	if not color then reg(b, "BackgroundColor3") end
+	local s = new("UIScale", {}, b)
+	b.MouseEnter:Connect(function() tween(s, .15, {Scale = 1.03}, Enum.EasingStyle.Back) end)
+	b.MouseLeave:Connect(function() tween(s, .15, {Scale = 1}) end)
+	b.MouseButton1Down:Connect(function() tween(s, .1, {Scale = .96}) end)
+	b.MouseButton1Click:Connect(function() ripple(b) sfx(CLICK_ID, 1, .4) cb() end)
+	return b
+end
+local oc = card(pgOwner, 226, true)
+L(oc, ICONS.owner .. " Give custom nametag", 14, Enum.Font.GothamBold, THEME.text, UDim2.fromOffset(14, 8), UDim2.new(1, -28, 0, 18))
+L(oc, "Owner only. They get the red + snow tag: Hub + their display name", 11, Enum.Font.Gotham, THEME.sub, UDim2.fromOffset(14, 28), UDim2.new(1, -28, 0, 14))
+local idBox = inputBox(oc, "User ID   (example: 1234567890)", 50)
+obtn(oc, ICONS.owner .. "  Give custom nametag", UDim2.fromOffset(14, 92), UDim2.new(1, -28, 0, 36), function()
+	local ok, msg = NT.ownerGive(idBox.Text, nil)
+	say(msg)
+	if ok then idBox.Text = "" end
+end)
+local nameBox = inputBox(oc, "Tag name (optional)   shows as: Hub <name>", 138)
+obtn(oc, "Set tag name", UDim2.fromOffset(14, 180), UDim2.new(.5, -19, 0, 36), function()
+	local _, msg = NT.ownerSetName(idBox.Text, nameBox.Text)
+	say(msg)
+end)
+obtn(oc, "Remove nametag", UDim2.new(.5, 5, 0, 180), UDim2.new(.5, -19, 0, 36), function()
+	local _, msg = NT.ownerRemove(idBox.Text)
+	say(msg)
+end, Color3.fromRGB(190, 50, 70))
+section(pgOwner, ICONS.players .. "  GIVEN NAMETAGS")
+local ownerList = new("Frame", {Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = 50}, pgOwner)
+new("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}, ownerList)
+local ownerEmpty = L(pgOwner, "No custom nametags given yet", 12, Enum.Font.Gotham, THEME.sub, UDim2.new(), UDim2.new(1, 0, 0, 22), Enum.TextXAlignment.Center)
+ownerEmpty.LayoutOrder = 51
+local function refreshOwnerList()
+	for _, ch in ipairs(ownerList:GetChildren()) do
+		if ch:IsA("Frame") then ch:Destroy() end
+	end
+	local ids = {}
+	for uid in pairs(NT.grants) do if uid ~= NT.OWNER then table.insert(ids, uid) end end
+	table.sort(ids)
+	for i, uid in ipairs(ids) do
+		local name = NT.grants[uid]
+		local plr = Players:GetPlayerByUserId(uid)
+		local shown = name ~= "" and name or (plr and plr.DisplayName or "(their display name)")
+		local r = new("Frame", {Size = UDim2.new(1, 0, 0, 48), BackgroundColor3 = THEME.card, LayoutOrder = i}, ownerList)
+		corner(r, 10)
+		local av = new("ImageLabel", {Size = UDim2.fromOffset(32, 32), Position = UDim2.fromOffset(8, 8), BackgroundColor3 = THEME.off,
+			Image = ("rbxthumb://type=AvatarHeadShot&id=%d&w=48&h=48"):format(uid)}, r)
+		corner(av, 16)
+		L(r, "Hub " .. shown, 13, Enum.Font.GothamBold, THEME.text, UDim2.fromOffset(50, 7), UDim2.new(1, -110, 0, 18))
+		L(r, "ID " .. uid .. (plr and "  ·  in this server" or "  ·  not here"), 10, Enum.Font.Gotham, THEME.sub, UDim2.fromOffset(50, 26), UDim2.new(1, -110, 0, 14))
+		miniBtn(r, "✕", 10, function()
+			local _, msg = NT.ownerRemove(tostring(uid))
+			say(msg)
+		end)
+	end
+	ownerEmpty.Visible = #ids == 0
+end
+refreshOwnerList()
+table.insert(NT.hooks, refreshOwnerList)
+button(pgOwner, "📋  Copy list for GitHub", function()
+	local _, msg = NT.copyList()
+	say(msg)
+end)
+
 peersChanged = function()
 	local n = 0
 	for _ in pairs(peers) do n += 1 end
@@ -1915,6 +2203,7 @@ peersChanged = function()
 	hubLbl.TextColor3 = n > 0 and THEME.text or THEME.sub
 	statusLbl.Text = ICONS.hubusers .. " Hub users seen: " .. n
 	refreshPlayers()
+	refreshOwnerList()
 end
 
 -- open / close / drag / keys
