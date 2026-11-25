@@ -1,4 +1,5 @@
--- Mini Panel v2.4: draggable, animated, click sounds, noclip, cinematic Click TP, smooth fly, !to / !hide / !unhide
+loadstring([==[
+-- Mini Panel v2.5: Superman fly, Laser Eyes tool, cinematic Click TP, noclip, !to / !hide / !unhide
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UIS = game:GetService("UserInputService")
@@ -9,7 +10,6 @@ local Debris = game:GetService("Debris")
 local LP = Players.LocalPlayer
 local Mouse = LP:GetMouse()
 
--- clean up any previous run
 local env = (getgenv and getgenv()) or _G
 if env.MiniPanelCleanup then pcall(env.MiniPanelCleanup) end
 
@@ -32,6 +32,7 @@ local function tween(obj, t, props, style, dir)
 	return tw
 end
 local function corner(o, r) local c = Instance.new("UICorner", o) c.CornerRadius = UDim.new(0, r) return c end
+local rng = Random.new()
 
 ---------------------------------------------------------------- Colors
 local BG        = Color3.fromRGB(24, 24, 32)
@@ -47,8 +48,8 @@ gui.Name = "MiniPanel"
 gui.ResetOnSpawn = false
 gui.Parent = getParent()
 
--- sounds (swap the IDs if you want different ones)
 local CLICK_ID, TOGGLE_ID = "rbxassetid://421058925", "rbxassetid://6895079853"
+local PING = "rbxasset://sounds/electronicpingshort.wav"
 local function sfx(id, speed, vol)
 	local s = Instance.new("Sound")
 	s.SoundId = id
@@ -60,7 +61,7 @@ local function sfx(id, speed, vol)
 end
 
 local main = Instance.new("CanvasGroup")
-main.Size = UDim2.fromOffset(300, 345)
+main.Size = UDim2.fromOffset(300, 392)
 main.AnchorPoint = Vector2.new(0.5, 0.5)
 main.Position = UDim2.fromScale(0.5, 0.5)
 main.BackgroundColor3 = BG
@@ -82,7 +83,6 @@ grad.Color = ColorSequence.new({
 	ColorSequenceKeypoint.new(1, ACCENT),
 })
 
--- title bar (drag handle)
 local handle = Instance.new("Frame")
 handle.Size = UDim2.new(1, -50, 0, 44)
 handle.BackgroundTransparency = 1
@@ -133,12 +133,11 @@ closeBtn.Parent = main
 corner(closeBtn, 8)
 hoverable(closeBtn, Color3.fromRGB(50, 50, 66), Color3.fromRGB(220, 70, 80))
 
--- output label
 local out = Instance.new("TextLabel")
 out.Size = UDim2.new(1, -28, 0, 50)
-out.Position = UDim2.fromOffset(14, 286)
+out.Position = UDim2.fromOffset(14, 334)
 out.BackgroundTransparency = 1
-out.Text = "K = panel  |  F = fly  |  drag the title to move"
+out.Text = "K = panel  |  F = fly  |  L = laser eyes"
 out.Font = Enum.Font.Gotham
 out.TextSize = 12
 out.TextWrapped = true
@@ -152,7 +151,6 @@ local function say(msg)
 	tween(out, 0.3, {TextTransparency = 0})
 end
 
--- toggle row builder (returns setter + getter)
 local function makeToggle(labelText, y, onChange)
 	local row = Instance.new("TextButton")
 	row.Size = UDim2.new(1, -28, 0, 40)
@@ -276,13 +274,13 @@ local function setNoclip(on)
 	end
 end
 
----------------------------------------------------------------- Click TP (cinematic: arc + motion blur + FOV punch + trail)
-local TP_BLUR_MAX = 26   -- max blur strength (0 = no blur, 24-30 = heavy)
-local TP_FOV_MAX  = 26   -- max extra field of view during the dash (0 = off)
+---------------------------------------------------------------- Click TP (arc + motion blur + FOV punch + trail)
+local TP_BLUR_MAX = 26
+local TP_FOV_MAX  = 26
 
 local tpEnabled = false
 local tpTool
-local flyVel = Vector3.zero -- shared with fly so a teleport never leaves leftover momentum
+local flyVel = Vector3.zero
 
 local tpBlur = Instance.new("BlurEffect")
 tpBlur.Name = "MiniPanelBlur"
@@ -292,7 +290,7 @@ tpBlur.Parent = Lighting
 
 local tpConn, blurTween, fovTween, tpBaseFov, trailObjs
 
-local function ease(a) -- smooth in-out
+local function ease(a)
 	if a < 0.5 then return 4 * a * a * a end
 	return 1 - ((-2 * a + 2) ^ 3) / 2
 end
@@ -327,7 +325,6 @@ local function makeTrail(root)
 	trailObjs = {a0, a1, tr}
 end
 
--- expanding ring at the destination
 local function pulseRing(pos)
 	local ring = Instance.new("Part")
 	ring.Shape = Enum.PartType.Cylinder
@@ -389,7 +386,6 @@ local function smoothTeleport(pos)
 	local dist = (goal - start).Magnitude
 	if dist < 1 then return end
 
-	-- restart cleanly if one is already running
 	if tpConn then tpConn:Disconnect() tpConn = nil end
 	if blurTween then blurTween:Cancel() end
 	if fovTween then fovTween:Cancel() end
@@ -424,7 +420,6 @@ local function smoothTeleport(pos)
 		root.CFrame = CFrame.new(p) * rot
 		root.AssemblyLinearVelocity = Vector3.zero
 
-		-- blur + FOV scale with how fast you're actually moving
 		local speed = (p - prev).Magnitude / math.max(dt, 1e-3)
 		prev = p
 		blurSize += (math.clamp(speed / 24, 0, TP_BLUR_MAX) - blurSize) * (1 - math.exp(-dt * 14))
@@ -477,12 +472,97 @@ track(LP.CharacterAdded:Connect(function()
 	end
 end))
 
----------------------------------------------------------------- Smooth Fly
+---------------------------------------------------------------- Superman Fly
 local flyEnabled = false
 local flySpeed = 60
 local FLY_MIN, FLY_MAX = 10, 250
 local flyConn, flyObjs
 local upHeld, downHeld = false, false
+local flyJoints, flyCape, flyAnim, windTrail
+local flyPose = 0
+local lastFlat = Vector3.new(0, 0, -1)
+
+local JOINT_NAMES = {
+	rs = {"RightShoulder", "Right Shoulder"},
+	ls = {"LeftShoulder", "Left Shoulder"},
+	rh = {"RightHip", "Right Hip"},
+	lh = {"LeftHip", "Left Hip"},
+	neck = {"Neck"},
+}
+
+local function grabJoints(char)
+	local j = {}
+	for key, names in pairs(JOINT_NAMES) do
+		for _, n in ipairs(names) do
+			local m = char:FindFirstChild(n, true)
+			if m and m:IsA("Motor6D") then
+				j[key] = {m = m, c0 = m.C0}
+				break
+			end
+		end
+	end
+	return j
+end
+
+local function applyPose(j, p, t)
+	local sway = math.sin(t * 2.2) * 0.04
+	local function set(key, rot)
+		local e = j[key]
+		if e and e.m.Parent then
+			e.m.C0 = CFrame.new(e.c0.Position) * rot * e.c0.Rotation
+		end
+	end
+	set("rs", CFrame.Angles(math.rad(168) * p + sway * p, 0, 0))
+	set("ls", CFrame.Angles(math.rad(-14) * p, 0, 0))
+	set("rh", CFrame.Angles(math.rad(-10) * p, 0, 0))
+	set("lh", CFrame.Angles(math.rad(-16) * p, 0, 0))
+	set("neck", CFrame.Angles(math.rad(70) * p, 0, 0))
+end
+
+local SEG_LEN, SEG_COUNT = 1.15, 3
+local function makeCape(char)
+	local torso = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+	if not torso then return nil end
+	local top = torso.Name == "UpperTorso" and 0.72 or 0.9
+	local cape = {segs = {}, welds = {}, top = top}
+	local prev = torso
+	for i = 1, SEG_COUNT do
+		local seg = Instance.new("Part")
+		seg.Name = "MiniPanelCape"
+		seg.Size = Vector3.new(1.9, SEG_LEN, 0.12)
+		seg.Color = Color3.fromRGB(200, 20, 30)
+		seg.Material = Enum.Material.Fabric
+		seg.CanCollide = false
+		seg.CanQuery = false
+		seg.CanTouch = false
+		seg.Massless = true
+		seg.CastShadow = false
+		local w = Instance.new("Weld")
+		w.Part0 = prev
+		w.Part1 = seg
+		w.C0 = i == 1 and CFrame.new(0, top, 0.55) or CFrame.new(0, -SEG_LEN / 2, 0)
+		w.C1 = CFrame.new(0, SEG_LEN / 2, 0)
+		w.Parent = seg
+		seg.Parent = char
+		cape.segs[i] = seg
+		cape.welds[i] = w
+		prev = seg
+	end
+	return cape
+end
+
+local function updateCape(cp, p, t)
+	for i, w in ipairs(cp.welds) do
+		local flutter = math.sin(t * 7 - i * 0.9) * (0.05 + 0.16 * p)
+		local flare = -(0.05 + 0.22 * p) * (i == 1 and 1.5 or 0.7) + flutter
+		local side = math.sin(t * 4.1 - i * 1.3) * 0.05 * (0.4 + p)
+		if i == 1 then
+			w.C0 = CFrame.new(0, cp.top, 0.55) * CFrame.Angles(flare, 0, side)
+		else
+			w.C0 = CFrame.new(0, -SEG_LEN / 2, 0) * CFrame.Angles(flare * 0.6, 0, side)
+		end
+	end
+end
 
 local function stopFly()
 	if flyConn then flyConn:Disconnect() flyConn = nil end
@@ -490,6 +570,22 @@ local function stopFly()
 		for _, o in pairs(flyObjs) do pcall(function() o:Destroy() end) end
 		flyObjs = nil
 	end
+	windTrail = nil
+	if flyJoints then
+		for _, e in pairs(flyJoints) do
+			if e.m.Parent then e.m.C0 = e.c0 end
+		end
+		flyJoints = nil
+	end
+	if flyCape then
+		for _, s in ipairs(flyCape.segs) do pcall(function() s:Destroy() end) end
+		flyCape = nil
+	end
+	if flyAnim then
+		pcall(function() flyAnim.Disabled = false end)
+		flyAnim = nil
+	end
+	flyPose = 0
 	local char = LP.Character
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
 	local root = char and char:FindFirstChild("HumanoidRootPart")
@@ -521,17 +617,45 @@ local function startFly()
 	ao.Attachment0 = att
 	ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
 	ao.MaxTorque = math.huge
-	ao.Responsiveness = 25
+	ao.Responsiveness = 28
 	ao.CFrame = root.CFrame.Rotation
 	ao.Parent = root
 
-	flyObjs = {att, lv, ao}
+	-- wind ribbon (shows when you're going fast)
+	local wa0 = Instance.new("Attachment")
+	wa0.Position = Vector3.new(1.3, 0, 0)
+	wa0.Parent = root
+	local wa1 = Instance.new("Attachment")
+	wa1.Position = Vector3.new(-1.3, 0, 0)
+	wa1.Parent = root
+	local wt = Instance.new("Trail")
+	wt.Attachment0, wt.Attachment1 = wa0, wa1
+	wt.Lifetime = 0.35
+	wt.MinLength = 0
+	wt.LightEmission = 0.35
+	wt.FaceCamera = false
+	wt.Color = ColorSequence.new(Color3.fromRGB(235, 245, 255))
+	wt.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.55), NumberSequenceKeypoint.new(1, 1)})
+	wt.Enabled = false
+	wt.Parent = root
+	windTrail = wt
+
+	flyObjs = {att, lv, ao, wa0, wa1, wt}
 	flyVel = root.AssemblyLinearVelocity
 	hum.PlatformStand = true
 
+	flyJoints = grabJoints(char)
+	flyCape = makeCape(char)
+	local animate = char:FindFirstChild("Animate")
+	if animate then
+		local ok = pcall(function() animate.Disabled = true end)
+		if ok then flyAnim = animate end
+	end
+	flyPose = 0
+
 	flyConn = RunService.RenderStepped:Connect(function(dt)
 		if not (root.Parent and hum.Parent and hum.Health > 0) then return end
-		if root.Anchored then return end -- a teleport is in control right now
+		if root.Anchored then return end
 		local cam = workspace.CurrentCamera
 		if not cam then return end
 		local cf = cam.CFrame
@@ -546,7 +670,6 @@ local function startFly()
 		end
 		if upHeld then y = 1 elseif downHeld then y = -1 end
 
-		-- joystick / mobile: turn the humanoid move direction into camera-relative input
 		if x == 0 and z == 0 then
 			local md = hum.MoveDirection
 			if md.Magnitude > 0.05 then
@@ -562,28 +685,58 @@ local function startFly()
 		local dir = right * x + look * z + Vector3.new(0, y, 0)
 		if dir.Magnitude > 1 then dir = dir.Unit end
 
-		-- exponential smoothing = soft acceleration and soft stop
-		local target = dir * flySpeed
-		flyVel = flyVel:Lerp(target, 1 - math.exp(-dt * 7))
+		flyVel = flyVel:Lerp(dir * flySpeed, 1 - math.exp(-dt * 7))
 		lv.VectorVelocity = flyVel
+		local speed = flyVel.Magnitude
 
-		-- face the camera direction, lean into the movement
 		local flat = Vector3.new(look.X, 0, look.Z)
-		if flat.Magnitude > 0.01 then
+		if flat.Magnitude > 0.02 then
 			flat = flat.Unit
-			local lean = math.clamp(flyVel:Dot(flat) / math.max(flySpeed, 1), -1, 1) * math.rad(30)
-			ao.CFrame = CFrame.lookAt(Vector3.zero, flat) * CFrame.Angles(-lean, 0, 0)
+			lastFlat = flat
+		else
+			flat = lastFlat
 		end
+
+		-- Superman pose weight: needs speed and mostly-forward movement
+		local fwd = speed > 1 and flyVel.Unit:Dot(look) or 0
+		local pTarget = math.clamp((speed - 6) / 18, 0, 1) * math.clamp((fwd + 0.15) / 0.45, 0, 1)
+		flyPose += (pTarget - flyPose) * (1 - math.exp(-dt * 5))
+
+		-- body orientation: upright facing the camera, blending into prone with head leading
+		local goal = CFrame.lookAt(Vector3.zero, flat)
+		if flyPose > 0.02 and speed > 1 then
+			local dirV = flyVel.Unit
+			local A = Vector3.yAxis - dirV * Vector3.yAxis:Dot(dirV)
+			local nf = -flat
+			local B = nf - dirV * nf:Dot(dirV)
+			local perp = A + B
+			if perp.Magnitude > 0.05 then
+				perp = perp.Unit
+				local prone = CFrame.fromMatrix(Vector3.zero, dirV:Cross(perp), dirV, perp)
+				goal = goal:Lerp(prone, flyPose)
+			end
+		end
+		ao.CFrame = goal
+
+		-- keep default animations off, drive the pose + cape
+		local animator = hum:FindFirstChildOfClass("Animator")
+		if animator then
+			for _, tr in ipairs(animator:GetPlayingAnimationTracks()) do tr:Stop(0.1) end
+		end
+		local tnow = os.clock()
+		if flyJoints then applyPose(flyJoints, flyPose, tnow) end
+		if flyCape then updateCape(flyCape, flyPose, tnow) end
+		if windTrail then windTrail.Enabled = speed > 32 end
 	end)
 	return true
 end
 
-local setFlyToggle -- assigned below
+local setFlyToggle
 local function setFly(on)
 	flyEnabled = on
 	if on then
 		if startFly() then
-			say("Fly ON: WASD + Space/Ctrl (or E/Q). Move toward where you look.")
+			say("Fly ON: WASD + Space/Ctrl (or E/Q). Fly forward for the Superman pose.")
 		else
 			flyEnabled = false
 			say("No character to fly with yet.")
@@ -602,16 +755,462 @@ track(LP.CharacterAdded:Connect(function()
 	end
 end))
 
+---------------------------------------------------------------- Laser Eyes (client-sided)
+local LASER_ID = ""        -- optional: paste your own laser loop, e.g. "rbxassetid://123456789"
+local LASER_RANGE = 450
+local MAX_ROCKS, MAX_SCORCH = 150, 70
+
+local laserEnabled = false
+local laserTool
+local firing = false
+local laserConn
+local laserCharge = 0
+local laserState
+
+local fxFolder = Instance.new("Folder")
+fxFolder.Name = "MiniPanelFX"
+fxFolder.Parent = workspace
+
+local rocks, scorches = {}, {}
+
+local function surfaceCF(pos, n)
+	local ref = math.abs(n.Y) > 0.95 and Vector3.xAxis or Vector3.yAxis
+	local x = ref:Cross(n).Unit
+	return CFrame.fromMatrix(pos, x, n)
+end
+
+local function surfaceLook(res)
+	local inst, mat = res.Instance, res.Material
+	local col = Color3.fromRGB(110, 100, 90)
+	if inst then
+		if inst:IsA("Terrain") then
+			local ok, c = pcall(function() return workspace.Terrain:GetMaterialColor(mat) end)
+			if ok and c then col = c end
+		elseif inst:IsA("BasePart") then
+			col = inst.Color
+			mat = inst.Material
+		end
+	end
+	if mat == Enum.Material.Water or mat == Enum.Material.Air or mat == Enum.Material.Neon
+		or mat == Enum.Material.Glass or mat == Enum.Material.ForceField then
+		mat = Enum.Material.Slate
+	end
+	return col, mat
+end
+
+local function spawnRock(pos, n, col, mat, big)
+	local k = rng:NextNumber()
+	local s = (0.22 + k * k * 1.0) * (big and 1.8 or 1)
+	local r = Instance.new(rng:NextNumber() < 0.35 and "WedgePart" or "Part")
+	r.Size = Vector3.new(s * rng:NextNumber(0.7, 1.5), s * rng:NextNumber(0.6, 1.2), s * rng:NextNumber(0.7, 1.5))
+	local shade = rng:NextNumber(0.65, 1.15)
+	r.Color = Color3.new(math.clamp(col.R * shade, 0, 1), math.clamp(col.G * shade, 0, 1), math.clamp(col.B * shade, 0, 1))
+	r.Material = mat
+	r.TopSurface = Enum.SurfaceType.Smooth
+	r.BottomSurface = Enum.SurfaceType.Smooth
+	r.CanQuery = false
+	r.CanTouch = false
+	r.CastShadow = false
+	r.CustomPhysicalProperties = PhysicalProperties.new(2, 0.6, 0.25)
+	r.CFrame = CFrame.new(pos + n * 0.35 + Vector3.new(rng:NextNumber(-0.6, 0.6), 0, rng:NextNumber(-0.6, 0.6)))
+		* CFrame.Angles(rng:NextNumber(0, 6.28), rng:NextNumber(0, 6.28), rng:NextNumber(0, 6.28))
+	r.Parent = fxFolder
+	local lateral = Vector3.new(rng:NextNumber(-1, 1), 0, rng:NextNumber(-1, 1)) * rng:NextNumber(10, 38)
+	r.AssemblyLinearVelocity = n * rng:NextNumber(26, 80) + lateral
+	r.AssemblyAngularVelocity = Vector3.new(rng:NextNumber(-18, 18), rng:NextNumber(-18, 18), rng:NextNumber(-18, 18))
+	table.insert(rocks, r)
+	if #rocks > MAX_ROCKS then
+		local old = table.remove(rocks, 1)
+		if old then old:Destroy() end
+	end
+	task.delay(rng:NextNumber(2.2, 4.2), function()
+		if r.Parent then
+			tween(r, 0.6, {Transparency = 1}, Enum.EasingStyle.Quad)
+			Debris:AddItem(r, 0.7)
+		end
+	end)
+end
+
+local function spawnScorch(pos, n, big)
+	local d = rng:NextNumber(1.6, 3.2) * (big and 1.5 or 1)
+	local function disc(color, mat, trans, size, offset)
+		local p = Instance.new("Part")
+		p.Shape = Enum.PartType.Cylinder
+		p.Anchored = true
+		p.CanCollide = false
+		p.CanQuery = false
+		p.CanTouch = false
+		p.CastShadow = false
+		p.Material = mat
+		p.Color = color
+		p.Transparency = trans
+		p.Size = Vector3.new(0.06, size, size)
+		p.CFrame = surfaceCF(pos + n * offset, n) * CFrame.Angles(0, 0, math.pi / 2)
+		p.Parent = fxFolder
+		return p
+	end
+	local burn = disc(Color3.fromRGB(18, 14, 12), Enum.Material.SmoothPlastic, 0.2, d, 0.035)
+	local glow = disc(Color3.fromRGB(255, 120, 30), Enum.Material.Neon, 0.1, d * 0.8, 0.05)
+	tween(glow, 1.4, {Transparency = 1, Color = Color3.fromRGB(120, 20, 5), Size = Vector3.new(0.06, d * 0.6, d * 0.6)}, Enum.EasingStyle.Quad)
+	Debris:AddItem(glow, 1.5)
+	table.insert(scorches, burn)
+	if #scorches > MAX_SCORCH then
+		local old = table.remove(scorches, 1)
+		if old then old:Destroy() end
+	end
+	task.delay(5, function()
+		if burn.Parent then
+			tween(burn, 1.5, {Transparency = 1})
+			Debris:AddItem(burn, 1.6)
+		end
+	end)
+end
+
+local function newGlowPart(color, trans)
+	local p = Instance.new("Part")
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.CastShadow = false
+	p.Material = Enum.Material.Neon
+	p.Color = color
+	p.Transparency = trans
+	p.Size = Vector3.new(0.1, 0.1, 0.1)
+	p.Parent = fxFolder
+	return p
+end
+
+local function makeLoop(speed, dist)
+	local s = Instance.new("Sound")
+	s.Looped = true
+	s.Volume = 0
+	if LASER_ID ~= "" then
+		s.SoundId = LASER_ID
+		s.PlaybackSpeed = 1
+	else
+		s.SoundId = PING
+		s.PlaybackSpeed = speed
+	end
+	local d = Instance.new("DistortionSoundEffect")
+	d.Level = dist
+	d.Parent = s
+	s.Parent = gui
+	s:Play()
+	return s
+end
+
+local function startLaserFx()
+	local st = {beams = {}, em = {}, snds = {}, debrisT = 0, scorchT = 0, bigT = 0, dwell = 0}
+
+	for i = 1, 2 do
+		local b = {
+			glow = newGlowPart(Color3.fromRGB(255, 10, 10), 0.72),
+			mid = newGlowPart(Color3.fromRGB(255, 60, 40), 0.2),
+			core = newGlowPart(Color3.fromRGB(255, 235, 225), 0),
+			flare = newGlowPart(Color3.fromRGB(255, 40, 30), 0.15),
+		}
+		b.flare.Shape = Enum.PartType.Ball
+		st.beams[i] = b
+	end
+
+	local hp = Instance.new("Part")
+	hp.Anchored = true
+	hp.CanCollide = false
+	hp.CanQuery = false
+	hp.CanTouch = false
+	hp.Transparency = 1
+	hp.Size = Vector3.new(0.4, 0.4, 0.4)
+	hp.Parent = fxFolder
+	st.hp = hp
+
+	local light = Instance.new("PointLight")
+	light.Color = Color3.fromRGB(255, 60, 40)
+	light.Range = 18
+	light.Brightness = 3
+	light.Parent = hp
+	st.light = light
+
+	local ball = newGlowPart(Color3.fromRGB(255, 120, 60), 0.2)
+	ball.Shape = Enum.PartType.Ball
+	st.glowBall = ball
+
+	local function emitter(cfg)
+		local e = Instance.new("ParticleEmitter")
+		e.Texture = cfg.tex
+		e.Color = cfg.color
+		e.LightEmission = cfg.light
+		e.Size = cfg.size
+		e.Transparency = cfg.trans
+		e.Lifetime = cfg.life
+		e.Rate = cfg.rate
+		e.Speed = cfg.speed
+		e.SpreadAngle = cfg.spread
+		e.Acceleration = cfg.acc
+		e.Rotation = NumberRange.new(0, 360)
+		e.EmissionDirection = Enum.NormalId.Top
+		e.Enabled = false
+		e.Parent = hp
+		return e
+	end
+
+	local SPARK = "rbxasset://textures/particles/sparkles_main.dds"
+	local SMOKE = "rbxasset://textures/particles/smoke_main.dds"
+	st.em.sparks = emitter({tex = SPARK, color = ColorSequence.new(Color3.fromRGB(255, 230, 120), Color3.fromRGB(255, 80, 20)),
+		light = 1, size = NumberSequence.new(0.35, 0), trans = NumberSequence.new(0, 1), life = NumberRange.new(0.25, 0.6),
+		rate = 90, speed = NumberRange.new(18, 45), spread = Vector2.new(75, 75), acc = Vector3.new(0, -70, 0)})
+	st.em.embers = emitter({tex = SPARK, color = ColorSequence.new(Color3.fromRGB(255, 170, 60)),
+		light = 1, size = NumberSequence.new(0.18, 0), trans = NumberSequence.new(0, 1), life = NumberRange.new(0.8, 1.6),
+		rate = 26, speed = NumberRange.new(6, 16), spread = Vector2.new(80, 80), acc = Vector3.new(0, 6, 0)})
+	st.em.smoke = emitter({tex = SMOKE, color = ColorSequence.new(Color3.fromRGB(90, 85, 80)),
+		light = 0, size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.8), NumberSequenceKeypoint.new(1, 3.6)}),
+		trans = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 1)}),
+		life = NumberRange.new(0.9, 1.7), rate = 22, speed = NumberRange.new(3, 9), spread = Vector2.new(35, 35), acc = Vector3.new(0, 5, 0)})
+	st.em.dust = emitter({tex = SMOKE, color = ColorSequence.new(Color3.fromRGB(150, 140, 125)),
+		light = 0, size = NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 4)}),
+		trans = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.4), NumberSequenceKeypoint.new(1, 1)}),
+		life = NumberRange.new(0.8, 1.4), rate = 30, speed = NumberRange.new(6, 14), spread = Vector2.new(60, 60), acc = Vector3.new(0, 2, 0)})
+
+	table.insert(st.snds, makeLoop(0.55, 0.6))
+	if LASER_ID == "" then table.insert(st.snds, makeLoop(1.4, 0.4)) end
+	return st
+end
+
+local function stopLaserFx()
+	local st = laserState
+	laserState = nil
+	if laserConn then laserConn:Disconnect() laserConn = nil end
+	laserCharge = 0
+	local char = LP.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum.CameraOffset = Vector3.zero
+		hum.AutoRotate = true
+	end
+	if not st then return end
+	for _, b in ipairs(st.beams) do
+		for _, p in pairs(b) do p:Destroy() end
+	end
+	st.glowBall:Destroy()
+	for _, e in pairs(st.em) do e.Enabled = false end
+	st.light.Enabled = false
+	Debris:AddItem(st.hp, 1.8)
+	for _, s in ipairs(st.snds) do
+		tween(s, 0.15, {Volume = 0})
+		Debris:AddItem(s, 0.25)
+	end
+	sfx(PING, 0.7, 0.3)
+end
+
+local function laserStep(dt)
+	local st = laserState
+	if not st then return end
+	local char = LP.Character
+	local head = char and char:FindFirstChild("Head")
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not (head and hum and root) then
+		stopLaserFx()
+		return
+	end
+	if hum.Health <= 0 then firing = false end
+
+	if firing then
+		laserCharge = math.min(1, laserCharge + dt / 0.14)
+	else
+		laserCharge = math.max(0, laserCharge - dt / 0.12)
+		if laserCharge <= 0 then
+			stopLaserFx()
+			return
+		end
+	end
+	local c = laserCharge
+	local t = os.clock()
+
+	-- aim from the mouse/touch point
+	local cam = workspace.CurrentCamera
+	local ray = cam:ScreenPointToRay(Mouse.X, Mouse.Y)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = {char, fxFolder}
+	params.IgnoreWater = true
+	local aimRes = workspace:Raycast(ray.Origin, ray.Direction * LASER_RANGE, params)
+	local aimPos = aimRes and aimRes.Position or (ray.Origin + ray.Direction * LASER_RANGE)
+
+	local eyeL = head.CFrame * Vector3.new(-0.2, 0.12, -0.52)
+	local eyeR = head.CFrame * Vector3.new(0.2, 0.12, -0.52)
+	local mid = (eyeL + eyeR) / 2
+	local dir = aimPos - mid
+	if dir.Magnitude < 0.5 then dir = head.CFrame.LookVector end
+	dir = dir.Unit
+
+	local res = workspace:Raycast(mid, dir * LASER_RANGE, params)
+	local hitPos = res and res.Position or (mid + dir * LASER_RANGE)
+	local normal = res and res.Normal or -dir
+
+	-- beams (two eyes converging on the hit point)
+	local eyes = {eyeL, eyeR}
+	for i = 1, 2 do
+		local b = st.beams[i]
+		local from = eyes[i]
+		local dist = (hitPos - from).Magnitude
+		if dist > 0.1 then
+			local cf = CFrame.lookAt(from, hitPos) * CFrame.new(0, 0, -dist / 2)
+			local pulse = 1 + math.sin(t * 70 + i) * 0.1 + rng:NextNumber(-0.05, 0.05)
+			local w = math.max(c * pulse, 0.02)
+			b.glow.Size = Vector3.new(0.55 * w, 0.55 * w, dist)
+			b.mid.Size = Vector3.new(0.2 * w, 0.2 * w, dist)
+			b.core.Size = Vector3.new(0.07 * w, 0.07 * w, dist)
+			b.glow.CFrame = cf
+			b.mid.CFrame = cf
+			b.core.CFrame = cf
+		end
+		local f = math.max(0.42 * c * (1 + math.sin(t * 50) * 0.15), 0.02)
+		b.flare.Size = Vector3.new(f, f, f)
+		b.flare.CFrame = CFrame.new(from)
+	end
+
+	-- impact
+	local hitValid = res ~= nil
+	local isChar = false
+	if res then
+		local m = res.Instance:FindFirstAncestorOfClass("Model")
+		isChar = m ~= nil and m:FindFirstChildOfClass("Humanoid") ~= nil
+	end
+	st.hp.CFrame = surfaceCF(hitPos + normal * 0.1, normal)
+	st.glowBall.CFrame = CFrame.new(hitPos + normal * 0.15)
+	local gs = math.max((1.0 + math.sin(t * 40) * 0.25 + rng:NextNumber(-0.15, 0.15)) * c * (hitValid and 1 or 0), 0.02)
+	st.glowBall.Size = Vector3.new(gs, gs, gs)
+	st.light.Enabled = hitValid
+	st.light.Brightness = 3 * c * (0.85 + rng:NextNumber(0, 0.3))
+
+	local on = firing and hitValid
+	st.em.sparks.Enabled = on
+	st.em.embers.Enabled = on
+	st.em.smoke.Enabled = on and not isChar
+	st.em.dust.Enabled = on and not isChar
+
+	-- ground breaking: rocks, scorch + molten glow, bigger chunks if you linger
+	if firing and hitValid and not isChar then
+		local col, mat = surfaceLook(res)
+		st.em.dust.Color = ColorSequence.new(col:Lerp(Color3.fromRGB(150, 140, 125), 0.35))
+
+		local moved = st.lastHit and (hitPos - st.lastHit).Magnitude or 99
+		st.lastHit = hitPos
+		if moved < 2.5 * math.max(dt, 0.016) * 8 then
+			st.dwell += dt
+		else
+			st.dwell = math.max(0, st.dwell - dt * 2)
+		end
+
+		st.debrisT += dt
+		st.scorchT += dt
+		local spawned = 0
+		while st.debrisT >= 0.04 and spawned < 3 do
+			st.debrisT -= 0.04
+			spawned += 1
+			for _ = 1, rng:NextInteger(1, 3) do spawnRock(hitPos, normal, col, mat, false) end
+		end
+		if st.debrisT > 0.2 then st.debrisT = 0 end
+		if st.dwell > 0.5 then
+			st.bigT += dt
+			if st.bigT >= 0.07 then
+				st.bigT = 0
+				spawnRock(hitPos, normal, col, mat, true)
+			end
+		end
+		if st.scorchT >= 0.1 then
+			st.scorchT = 0
+			spawnScorch(hitPos, normal, st.dwell > 0.5)
+		end
+	else
+		st.lastHit = nil
+		st.dwell = 0
+	end
+
+	-- shake + face the target
+	hum.CameraOffset = Vector3.new(rng:NextNumber(-1, 1), rng:NextNumber(-1, 1), 0) * 0.05 * c
+	if not flyEnabled and not root.Anchored then
+		hum.AutoRotate = false
+		local flatDir = Vector3.new(dir.X, 0, dir.Z)
+		if flatDir.Magnitude > 0.05 then
+			local goal = CFrame.lookAt(Vector3.zero, flatDir.Unit)
+			root.CFrame = CFrame.new(root.Position) * root.CFrame.Rotation:Lerp(goal, 1 - math.exp(-dt * 16))
+		end
+	end
+
+	-- laser hum (pitch wobble + charge-up)
+	for i, s in ipairs(st.snds) do
+		s.Volume = (i == 1 and 0.55 or 0.3) * c
+		if LASER_ID == "" then
+			local base = i == 1 and 0.55 or 1.4
+			s.PlaybackSpeed = base * (0.8 + 0.2 * c) * (1 + math.sin(t * (i == 1 and 31 or 47)) * 0.12)
+		end
+	end
+end
+
+local function startLaser()
+	if laserState then
+		firing = true
+		return
+	end
+	firing = true
+	laserCharge = 0
+	laserState = startLaserFx()
+	sfx(PING, 2.0, 0.35)
+	laserConn = RunService.RenderStepped:Connect(laserStep)
+end
+
+local function removeLaserTool()
+	firing = false
+	if laserTool then laserTool:Destroy() laserTool = nil end
+end
+
+local function giveLaserTool()
+	if laserTool and laserTool.Parent then return end
+	local t = Instance.new("Tool")
+	t.Name = "Laser Eyes"
+	t.ToolTip = "Equip, then hold left click / tap to fire"
+	t.RequiresHandle = false
+	t.CanBeDropped = false
+	t.Activated:Connect(function()
+		if laserEnabled then startLaser() end
+	end)
+	t.Deactivated:Connect(function() firing = false end)
+	t.Unequipped:Connect(function() firing = false end)
+	laserTool = t
+	t.Parent = LP:FindFirstChildOfClass("Backpack") or LP:WaitForChild("Backpack")
+end
+
+local function setLaser(on)
+	laserEnabled = on
+	if on then
+		giveLaserTool()
+		say("Laser Eyes ON: equip the tool, then hold left click / tap.")
+	else
+		removeLaserTool()
+		say("Laser Eyes OFF")
+	end
+end
+
+track(LP.CharacterAdded:Connect(function()
+	if laserEnabled then
+		task.wait(0.5)
+		removeLaserTool()
+		giveLaserTool()
+	end
+end))
+
 ---------------------------------------------------------------- Rows, speed slider, command box
 local setNoclipToggle = makeToggle("Noclip", 50, setNoclip)
 local setTPToggle = makeToggle("Click TP Tool", 98, setTP)
 local getFly
 setFlyToggle, getFly = makeToggle("Fly", 146, setFly)
+local setLaserToggle, getLaser = makeToggle("Laser Eyes Tool", 194, setLaser)
 
--- fly speed slider
 local sRow = Instance.new("Frame")
 sRow.Size = UDim2.new(1, -28, 0, 40)
-sRow.Position = UDim2.fromOffset(14, 194)
+sRow.Position = UDim2.fromOffset(14, 242)
 sRow.BackgroundColor3 = ROW
 sRow.Parent = main
 corner(sRow, 10)
@@ -679,10 +1278,9 @@ track(UIS.InputEnded:Connect(function(input)
 	end
 end))
 
--- command box
 local box = Instance.new("TextBox")
 box.Size = UDim2.new(1, -28, 0, 36)
-box.Position = UDim2.fromOffset(14, 242)
+box.Position = UDim2.fromOffset(14, 290)
 box.BackgroundColor3 = ROW
 box.PlaceholderText = "!to name  |  !hide name  |  !unhide name"
 box.PlaceholderColor3 = Color3.fromRGB(130, 130, 150)
@@ -731,10 +1329,13 @@ track(UIS.InputBegan:Connect(function(input, processed)
 		local nextState = not getFly()
 		sfx(TOGGLE_ID, nextState and 1.15 or 0.85)
 		setFlyToggle(nextState)
+	elseif input.KeyCode == Enum.KeyCode.L then
+		local nextState = not getLaser()
+		sfx(TOGGLE_ID, nextState and 1.15 or 0.85)
+		setLaserToggle(nextState)
 	end
 end))
 
--- floating button (handy on mobile where there's no K key)
 local fab = Instance.new("TextButton")
 fab.Size = UDim2.fromOffset(38, 38)
 fab.AnchorPoint = Vector2.new(0, 0.5)
@@ -756,7 +1357,6 @@ fab.MouseButton1Click:Connect(function()
 	setOpen(not isOpen)
 end)
 
--- mobile fly up/down buttons (only visible while flying on a touch device)
 local function holdButton(text, yOffset, onHold)
 	local b = Instance.new("TextButton")
 	b.Size = UDim2.fromOffset(54, 54)
@@ -800,12 +1400,11 @@ track(RunService.Heartbeat:Connect(function()
 	downBtn.Visible = show
 end))
 
--- animated border
 track(RunService.Heartbeat:Connect(function(dt)
 	if isOpen then grad.Rotation = (grad.Rotation + dt * 70) % 360 end
 end))
 
----------------------------------------------------------------- Dragging (mouse + touch)
+---------------------------------------------------------------- Dragging
 local dragging, dragStart, startPos, dragInput
 handle.InputBegan:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -833,7 +1432,7 @@ track(UIS.InputChanged:Connect(function(input)
 	end
 end))
 
----------------------------------------------------------------- Name matching (exact > starts with > contains)
+---------------------------------------------------------------- Name matching
 local function findPlayer(query)
 	query = (query or ""):lower()
 	if query == "" then return nil, "Type a name." end
@@ -861,7 +1460,7 @@ local function findPlayer(query)
 	return nil, "No player found for '" .. query .. "'."
 end
 
----------------------------------------------------------------- !hide (client-side only)
+---------------------------------------------------------------- !hide
 local hidden = {}
 local origVolume = setmetatable({}, {__mode = "k"})
 local origDisplay = setmetatable({}, {__mode = "k"})
@@ -992,6 +1591,9 @@ env.MiniPanelCleanup = function()
 	pcall(cancelTeleport)
 	pcall(noclipOff)
 	pcall(stopFly)
+	pcall(removeLaserTool)
+	pcall(stopLaserFx)
+	pcall(function() fxFolder:Destroy() end)
 	removeTool()
 	pcall(function() dropTrail(true) end)
 	pcall(function() tpBlur:Destroy() end)
@@ -1007,4 +1609,5 @@ env.MiniPanelCleanup = function()
 	gui:Destroy()
 end
 
-setOpen(true) -- smooth open on execute
+setOpen(true)
+]==])()
