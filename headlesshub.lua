@@ -1,9 +1,10 @@
--- Mini Panel v2.1: draggable, animated, click sounds, noclip, Click TP tool, !to / !hide / !unhide
+-- Mini Panel v2.4: draggable, animated, click sounds, noclip, cinematic Click TP, smooth fly, !to / !hide / !unhide
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local TextChatService = game:GetService("TextChatService")
+local Lighting = game:GetService("Lighting")
 local Debris = game:GetService("Debris")
 local LP = Players.LocalPlayer
 local Mouse = LP:GetMouse()
@@ -59,7 +60,7 @@ local function sfx(id, speed, vol)
 end
 
 local main = Instance.new("CanvasGroup")
-main.Size = UDim2.fromOffset(300, 270)
+main.Size = UDim2.fromOffset(300, 345)
 main.AnchorPoint = Vector2.new(0.5, 0.5)
 main.Position = UDim2.fromScale(0.5, 0.5)
 main.BackgroundColor3 = BG
@@ -134,10 +135,10 @@ hoverable(closeBtn, Color3.fromRGB(50, 50, 66), Color3.fromRGB(220, 70, 80))
 
 -- output label
 local out = Instance.new("TextLabel")
-out.Size = UDim2.new(1, -28, 0, 64)
-out.Position = UDim2.fromOffset(14, 194)
+out.Size = UDim2.new(1, -28, 0, 50)
+out.Position = UDim2.fromOffset(14, 286)
 out.BackgroundTransparency = 1
-out.Text = "K = open/close  |  drag the title to move"
+out.Text = "K = panel  |  F = fly  |  drag the title to move"
 out.Font = Enum.Font.Gotham
 out.TextSize = 12
 out.TextWrapped = true
@@ -151,7 +152,7 @@ local function say(msg)
 	tween(out, 0.3, {TextTransparency = 0})
 end
 
--- toggle row builder
+-- toggle row builder (returns setter + getter)
 local function makeToggle(labelText, y, onChange)
 	local row = Instance.new("TextButton")
 	row.Size = UDim2.new(1, -28, 0, 40)
@@ -211,63 +212,228 @@ local function makeToggle(labelText, y, onChange)
 		sfx(TOGGLE_ID, state and 0.85 or 1.15)
 		set(not state)
 	end)
-	return set
+	return set, function() return state end
 end
 
----------------------------------------------------------------- Noclip (restores collisions when off)
-local noclipConn
-local touched = {}
+---------------------------------------------------------------- Noclip
+local noclipActive = false
+local noclipConns = {}
+local originalCollide = setmetatable({}, {__mode = "k"})
+
+local function noclipStep()
+	local char = LP.Character
+	if not char then return end
+	for _, p in ipairs(char:GetDescendants()) do
+		if p:IsA("BasePart") then
+			if originalCollide[p] == nil then originalCollide[p] = p.CanCollide end
+			if p.CanCollide then p.CanCollide = false end
+		end
+	end
+end
+
+local function unstick()
+	local char = LP.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+	local params = OverlapParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = {char}
+	local function blocked()
+		for _, part in ipairs(workspace:GetPartBoundsInBox(root.CFrame, Vector3.new(2, 4.5, 1.5), params)) do
+			if part.CanCollide then return true end
+		end
+		return false
+	end
+	local moved = 0
+	while moved < 80 and blocked() do
+		root.CFrame = root.CFrame + Vector3.new(0, 1, 0)
+		moved += 1
+	end
+	if moved > 0 then root.AssemblyLinearVelocity = Vector3.zero end
+end
+
+local function noclipOff()
+	noclipActive = false
+	for _, c in ipairs(noclipConns) do pcall(function() c:Disconnect() end) end
+	table.clear(noclipConns)
+	for p, was in pairs(originalCollide) do
+		if p.Parent then p.CanCollide = was end
+		originalCollide[p] = nil
+	end
+	pcall(unstick)
+end
 
 local function setNoclip(on)
-	if noclipConn then noclipConn:Disconnect() noclipConn = nil end
 	if on then
-		noclipConn = RunService.Stepped:Connect(function()
-			local char = LP.Character
-			if not char then return end
-			for _, p in ipairs(char:GetDescendants()) do
-				if p:IsA("BasePart") and p.CanCollide then
-					touched[p] = true
-					p.CanCollide = false
-				end
-			end
-		end)
+		if noclipActive then return end
+		noclipActive = true
+		table.insert(noclipConns, RunService.Stepped:Connect(noclipStep))
+		table.insert(noclipConns, RunService.Heartbeat:Connect(noclipStep))
 		say("Noclip ON")
 	else
-		for p in pairs(touched) do
-			if p.Parent then p.CanCollide = true end
-		end
-		table.clear(touched)
+		noclipOff()
 		say("Noclip OFF")
 	end
 end
 
----------------------------------------------------------------- Click TP tool
+---------------------------------------------------------------- Click TP (cinematic: arc + motion blur + FOV punch + trail)
+local TP_BLUR_MAX = 26   -- max blur strength (0 = no blur, 24-30 = heavy)
+local TP_FOV_MAX  = 26   -- max extra field of view during the dash (0 = off)
+
 local tpEnabled = false
-local tpTool, tpTween
+local tpTool
+local flyVel = Vector3.zero -- shared with fly so a teleport never leaves leftover momentum
+
+local tpBlur = Instance.new("BlurEffect")
+tpBlur.Name = "MiniPanelBlur"
+tpBlur.Size = 0
+tpBlur.Enabled = false
+tpBlur.Parent = Lighting
+
+local tpConn, blurTween, fovTween, tpBaseFov, trailObjs
+
+local function ease(a) -- smooth in-out
+	if a < 0.5 then return 4 * a * a * a end
+	return 1 - ((-2 * a + 2) ^ 3) / 2
+end
+
+local function dropTrail(immediate)
+	if not trailObjs then return end
+	for _, o in ipairs(trailObjs) do
+		if o:IsA("Trail") then o.Enabled = false end
+		if immediate then pcall(function() o:Destroy() end) else Debris:AddItem(o, 0.7) end
+	end
+	trailObjs = nil
+end
+
+local function makeTrail(root)
+	dropTrail(true)
+	local a0 = Instance.new("Attachment")
+	a0.Position = Vector3.new(0, 1.4, 0)
+	a0.Parent = root
+	local a1 = Instance.new("Attachment")
+	a1.Position = Vector3.new(0, -1.4, 0)
+	a1.Parent = root
+	local tr = Instance.new("Trail")
+	tr.Attachment0, tr.Attachment1 = a0, a1
+	tr.Lifetime = 0.4
+	tr.MinLength = 0
+	tr.LightEmission = 1
+	tr.FaceCamera = true
+	tr.Color = ColorSequence.new(ACCENT2, ACCENT)
+	tr.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.15), NumberSequenceKeypoint.new(1, 1)})
+	tr.WidthScale = NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0)})
+	tr.Parent = root
+	trailObjs = {a0, a1, tr}
+end
+
+-- expanding ring at the destination
+local function pulseRing(pos)
+	local ring = Instance.new("Part")
+	ring.Shape = Enum.PartType.Cylinder
+	ring.Anchored = true
+	ring.CanCollide = false
+	ring.CanQuery = false
+	ring.CanTouch = false
+	ring.Material = Enum.Material.Neon
+	ring.Color = ACCENT2
+	ring.Transparency = 0.2
+	ring.Size = Vector3.new(0.2, 2, 2)
+	ring.CFrame = CFrame.new(pos + Vector3.new(0, 0.15, 0)) * CFrame.Angles(0, 0, math.rad(90))
+	ring.Parent = workspace
+	tween(ring, 0.7, {Size = Vector3.new(0.2, 9, 9), Transparency = 1})
+	Debris:AddItem(ring, 0.8)
+end
+
+local function finishTeleport(root)
+	if tpConn then tpConn:Disconnect() tpConn = nil end
+	if root and root.Parent then
+		root.Anchored = false
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+	end
+	flyVel = Vector3.zero
+	dropTrail(false)
+
+	local cam = workspace.CurrentCamera
+	if cam and tpBaseFov then
+		fovTween = tween(cam, 0.45, {FieldOfView = tpBaseFov}, Enum.EasingStyle.Quad)
+		fovTween.Completed:Connect(function(state)
+			if state == Enum.PlaybackState.Completed and not tpConn then tpBaseFov = nil end
+		end)
+	end
+	blurTween = tween(tpBlur, 0.35, {Size = 0}, Enum.EasingStyle.Quad)
+	blurTween.Completed:Connect(function(state)
+		if state == Enum.PlaybackState.Completed and not tpConn then tpBlur.Enabled = false end
+	end)
+	sfx(CLICK_ID, 0.7, 0.5)
+end
+
+local function cancelTeleport()
+	if tpConn then
+		local char = LP.Character
+		finishTeleport(char and char:FindFirstChild("HumanoidRootPart"))
+	end
+end
 
 local function smoothTeleport(pos)
 	local char = LP.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not root then return end
 	local hum = char:FindFirstChildOfClass("Humanoid")
-	local lift = (hum and hum.HipHeight or 2) + root.Size.Y / 2 + 0.5
-	local dist = (root.Position - pos).Magnitude
-	local t = math.clamp(dist / 250, 0.25, 1.1)
-	local rotation = root.CFrame - root.CFrame.Position
-	local target = CFrame.new(pos + Vector3.new(0, lift, 0)) * rotation
+	local cam = workspace.CurrentCamera
 
-	if tpTween then tpTween:Cancel() end
+	local lift = (hum and hum.HipHeight or 2) + root.Size.Y / 2 + 0.5
+	local goal = pos + Vector3.new(0, lift, 0)
+	local start = root.Position
+	local dist = (goal - start).Magnitude
+	if dist < 1 then return end
+
+	-- restart cleanly if one is already running
+	if tpConn then tpConn:Disconnect() tpConn = nil end
+	if blurTween then blurTween:Cancel() end
+	if fovTween then fovTween:Cancel() end
+
+	pulseRing(pos)
+	sfx(TOGGLE_ID, 1.7, 0.45)
+	makeTrail(root)
+
+	local dur = math.clamp(0.35 + dist / 450, 0.4, 1.5)
+	local arc = dist > 12 and math.clamp(dist * 0.1, 3, 35) or 0
+	local flat = Vector3.new(goal.X - start.X, 0, goal.Z - start.Z)
+	local rot = root.CFrame.Rotation
+	local faceRot = flat.Magnitude > 1 and CFrame.lookAt(Vector3.zero, flat.Unit) or rot
+
+	tpBlur.Enabled = true
+	if cam and not tpBaseFov then tpBaseFov = cam.FieldOfView end
+
 	root.Anchored = true
-	local tw = TweenService:Create(root, TweenInfo.new(t, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {CFrame = target})
-	tpTween = tw
-	tw.Completed:Connect(function()
-		if tpTween ~= tw then return end
-		if root.Parent then
-			root.Anchored = false
-			root.AssemblyLinearVelocity = Vector3.zero
+	local elapsed, prev = 0, start
+	local blurSize = tpBlur.Size
+	local fovAdd = (cam and tpBaseFov) and (cam.FieldOfView - tpBaseFov) or 0
+
+	tpConn = RunService.RenderStepped:Connect(function(dt)
+		if not root.Parent then
+			finishTeleport(nil)
+			return
 		end
+		elapsed += dt
+		local a = math.min(elapsed / dur, 1)
+		local p = start:Lerp(goal, ease(a)) + Vector3.new(0, math.sin(math.pi * a) * arc, 0)
+		rot = rot:Lerp(faceRot, 1 - math.exp(-dt * 9))
+		root.CFrame = CFrame.new(p) * rot
+		root.AssemblyLinearVelocity = Vector3.zero
+
+		-- blur + FOV scale with how fast you're actually moving
+		local speed = (p - prev).Magnitude / math.max(dt, 1e-3)
+		prev = p
+		blurSize += (math.clamp(speed / 24, 0, TP_BLUR_MAX) - blurSize) * (1 - math.exp(-dt * 14))
+		tpBlur.Size = blurSize
+		fovAdd += (math.clamp(speed / 20, 0, TP_FOV_MAX) - fovAdd) * (1 - math.exp(-dt * 10))
+		if cam and tpBaseFov then cam.FieldOfView = tpBaseFov + fovAdd end
+
+		if a >= 1 then finishTeleport(root) end
 	end)
-	tw:Play()
 end
 
 local function removeTool()
@@ -298,9 +464,7 @@ local function setTP(on)
 		say("Click TP ON: equip the tool, then click/tap the ground.")
 	else
 		removeTool()
-		if tpTween then tpTween:Cancel() end
-		local root = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
-		if root then root.Anchored = false end
+		cancelTeleport()
 		say("Click TP OFF")
 	end
 end
@@ -313,13 +477,212 @@ track(LP.CharacterAdded:Connect(function()
 	end
 end))
 
----------------------------------------------------------------- Rows + command box
+---------------------------------------------------------------- Smooth Fly
+local flyEnabled = false
+local flySpeed = 60
+local FLY_MIN, FLY_MAX = 10, 250
+local flyConn, flyObjs
+local upHeld, downHeld = false, false
+
+local function stopFly()
+	if flyConn then flyConn:Disconnect() flyConn = nil end
+	if flyObjs then
+		for _, o in pairs(flyObjs) do pcall(function() o:Destroy() end) end
+		flyObjs = nil
+	end
+	local char = LP.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if hum then hum.PlatformStand = false end
+	if root and not root.Anchored then root.AssemblyLinearVelocity = Vector3.zero end
+	flyVel = Vector3.zero
+end
+
+local function startFly()
+	stopFly()
+	local char = LP.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not (root and hum) then return false end
+
+	local att = Instance.new("Attachment")
+	att.Name = "FlyAttachment"
+	att.Parent = root
+
+	local lv = Instance.new("LinearVelocity")
+	lv.Attachment0 = att
+	lv.RelativeTo = Enum.ActuatorRelativeTo.World
+	lv.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+	lv.MaxForce = math.huge
+	lv.VectorVelocity = Vector3.zero
+	lv.Parent = root
+
+	local ao = Instance.new("AlignOrientation")
+	ao.Attachment0 = att
+	ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
+	ao.MaxTorque = math.huge
+	ao.Responsiveness = 25
+	ao.CFrame = root.CFrame.Rotation
+	ao.Parent = root
+
+	flyObjs = {att, lv, ao}
+	flyVel = root.AssemblyLinearVelocity
+	hum.PlatformStand = true
+
+	flyConn = RunService.RenderStepped:Connect(function(dt)
+		if not (root.Parent and hum.Parent and hum.Health > 0) then return end
+		if root.Anchored then return end -- a teleport is in control right now
+		local cam = workspace.CurrentCamera
+		if not cam then return end
+		local cf = cam.CFrame
+		local look, right = cf.LookVector, cf.RightVector
+
+		local x, z, y = 0, 0, 0
+		if not UIS:GetFocusedTextBox() then
+			local function k(code) return UIS:IsKeyDown(code) and 1 or 0 end
+			x = k(Enum.KeyCode.D) - k(Enum.KeyCode.A)
+			z = k(Enum.KeyCode.W) - k(Enum.KeyCode.S)
+			y = math.max(k(Enum.KeyCode.Space), k(Enum.KeyCode.E)) - math.max(k(Enum.KeyCode.LeftControl), k(Enum.KeyCode.Q))
+		end
+		if upHeld then y = 1 elseif downHeld then y = -1 end
+
+		-- joystick / mobile: turn the humanoid move direction into camera-relative input
+		if x == 0 and z == 0 then
+			local md = hum.MoveDirection
+			if md.Magnitude > 0.05 then
+				local flatLook = Vector3.new(look.X, 0, look.Z)
+				local flatRight = Vector3.new(right.X, 0, right.Z)
+				if flatLook.Magnitude > 0.01 and flatRight.Magnitude > 0.01 then
+					z = md:Dot(flatLook.Unit)
+					x = md:Dot(flatRight.Unit)
+				end
+			end
+		end
+
+		local dir = right * x + look * z + Vector3.new(0, y, 0)
+		if dir.Magnitude > 1 then dir = dir.Unit end
+
+		-- exponential smoothing = soft acceleration and soft stop
+		local target = dir * flySpeed
+		flyVel = flyVel:Lerp(target, 1 - math.exp(-dt * 7))
+		lv.VectorVelocity = flyVel
+
+		-- face the camera direction, lean into the movement
+		local flat = Vector3.new(look.X, 0, look.Z)
+		if flat.Magnitude > 0.01 then
+			flat = flat.Unit
+			local lean = math.clamp(flyVel:Dot(flat) / math.max(flySpeed, 1), -1, 1) * math.rad(30)
+			ao.CFrame = CFrame.lookAt(Vector3.zero, flat) * CFrame.Angles(-lean, 0, 0)
+		end
+	end)
+	return true
+end
+
+local setFlyToggle -- assigned below
+local function setFly(on)
+	flyEnabled = on
+	if on then
+		if startFly() then
+			say("Fly ON: WASD + Space/Ctrl (or E/Q). Move toward where you look.")
+		else
+			flyEnabled = false
+			say("No character to fly with yet.")
+			task.defer(function() if setFlyToggle then setFlyToggle(false) end end)
+		end
+	else
+		stopFly()
+		say("Fly OFF")
+	end
+end
+
+track(LP.CharacterAdded:Connect(function()
+	if flyEnabled then
+		task.wait(0.6)
+		if flyEnabled then startFly() end
+	end
+end))
+
+---------------------------------------------------------------- Rows, speed slider, command box
 local setNoclipToggle = makeToggle("Noclip", 50, setNoclip)
 local setTPToggle = makeToggle("Click TP Tool", 98, setTP)
+local getFly
+setFlyToggle, getFly = makeToggle("Fly", 146, setFly)
 
+-- fly speed slider
+local sRow = Instance.new("Frame")
+sRow.Size = UDim2.new(1, -28, 0, 40)
+sRow.Position = UDim2.fromOffset(14, 194)
+sRow.BackgroundColor3 = ROW
+sRow.Parent = main
+corner(sRow, 10)
+
+local sLbl = Instance.new("TextLabel")
+sLbl.Size = UDim2.new(1, -24, 0, 18)
+sLbl.Position = UDim2.fromOffset(12, 4)
+sLbl.BackgroundTransparency = 1
+sLbl.Text = "Fly speed: " .. flySpeed
+sLbl.Font = Enum.Font.GothamMedium
+sLbl.TextSize = 12
+sLbl.TextColor3 = Color3.fromRGB(200, 200, 215)
+sLbl.TextXAlignment = Enum.TextXAlignment.Left
+sLbl.Parent = sRow
+
+local sTrack = Instance.new("Frame")
+sTrack.Size = UDim2.new(1, -24, 0, 6)
+sTrack.Position = UDim2.fromOffset(12, 27)
+sTrack.BackgroundColor3 = OFF
+sTrack.Parent = sRow
+corner(sTrack, 3)
+
+local sFill = Instance.new("Frame")
+sFill.BackgroundColor3 = ACCENT
+sFill.Size = UDim2.fromScale((flySpeed - FLY_MIN) / (FLY_MAX - FLY_MIN), 1)
+sFill.Parent = sTrack
+corner(sFill, 3)
+
+local sKnob = Instance.new("Frame")
+sKnob.Size = UDim2.fromOffset(14, 14)
+sKnob.AnchorPoint = Vector2.new(0.5, 0.5)
+sKnob.Position = UDim2.fromScale((flySpeed - FLY_MIN) / (FLY_MAX - FLY_MIN), 0.5)
+sKnob.BackgroundColor3 = Color3.new(1, 1, 1)
+sKnob.Parent = sTrack
+corner(sKnob, 7)
+local sKnobScale = Instance.new("UIScale", sKnob)
+
+local sliding = false
+local function slideTo(px)
+	local a = math.clamp((px - sTrack.AbsolutePosition.X) / math.max(sTrack.AbsoluteSize.X, 1), 0, 1)
+	flySpeed = math.floor(FLY_MIN + a * (FLY_MAX - FLY_MIN) + 0.5)
+	sLbl.Text = "Fly speed: " .. flySpeed
+	tween(sFill, 0.08, {Size = UDim2.fromScale(a, 1)}, Enum.EasingStyle.Quad)
+	tween(sKnob, 0.08, {Position = UDim2.fromScale(a, 0.5)}, Enum.EasingStyle.Quad)
+end
+
+sRow.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		sliding = true
+		tween(sKnobScale, 0.15, {Scale = 1.3}, Enum.EasingStyle.Back)
+		slideTo(input.Position.X)
+	end
+end)
+sRow.MouseEnter:Connect(function() tween(sRow, 0.2, {BackgroundColor3 = ROW_HOVER}) end)
+sRow.MouseLeave:Connect(function() tween(sRow, 0.2, {BackgroundColor3 = ROW}) end)
+track(UIS.InputChanged:Connect(function(input)
+	if sliding and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		slideTo(input.Position.X)
+	end
+end))
+track(UIS.InputEnded:Connect(function(input)
+	if sliding and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+		sliding = false
+		tween(sKnobScale, 0.15, {Scale = 1}, Enum.EasingStyle.Back)
+	end
+end))
+
+-- command box
 local box = Instance.new("TextBox")
 box.Size = UDim2.new(1, -28, 0, 36)
-box.Position = UDim2.fromOffset(14, 148)
+box.Position = UDim2.fromOffset(14, 242)
 box.BackgroundColor3 = ROW
 box.PlaceholderText = "!to name  |  !hide name  |  !unhide name"
 box.PlaceholderColor3 = Color3.fromRGB(130, 130, 150)
@@ -364,6 +727,10 @@ track(UIS.InputBegan:Connect(function(input, processed)
 	if input.KeyCode == Enum.KeyCode.K then
 		sfx(CLICK_ID, isOpen and 0.85 or 1.1)
 		setOpen(not isOpen)
+	elseif input.KeyCode == Enum.KeyCode.F then
+		local nextState = not getFly()
+		sfx(TOGGLE_ID, nextState and 1.15 or 0.85)
+		setFlyToggle(nextState)
 	end
 end))
 
@@ -388,6 +755,50 @@ fab.MouseButton1Click:Connect(function()
 	sfx(CLICK_ID, isOpen and 0.85 or 1.1)
 	setOpen(not isOpen)
 end)
+
+-- mobile fly up/down buttons (only visible while flying on a touch device)
+local function holdButton(text, yOffset, onHold)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.fromOffset(54, 54)
+	b.AnchorPoint = Vector2.new(1, 0.5)
+	b.Position = UDim2.new(1, -16, 0.5, yOffset)
+	b.BackgroundColor3 = BG
+	b.BackgroundTransparency = 0.1
+	b.Text = text
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 13
+	b.TextColor3 = Color3.new(1, 1, 1)
+	b.AutoButtonColor = false
+	b.Visible = false
+	b.Parent = gui
+	corner(b, 27)
+	local st = Instance.new("UIStroke", b)
+	st.Color = ACCENT
+	st.Thickness = 1.5
+	local bs = Instance.new("UIScale", b)
+	b.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+			onHold(true)
+			tween(bs, 0.1, {Scale = 0.9})
+			tween(b, 0.1, {BackgroundColor3 = ACCENT})
+		end
+	end)
+	b.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+			onHold(false)
+			tween(bs, 0.15, {Scale = 1}, Enum.EasingStyle.Back)
+			tween(b, 0.15, {BackgroundColor3 = BG})
+		end
+	end)
+	return b
+end
+local upBtn = holdButton("UP", -34, function(v) upHeld = v end)
+local downBtn = holdButton("DOWN", 34, function(v) downHeld = v end)
+track(RunService.Heartbeat:Connect(function()
+	local show = flyEnabled and UIS.TouchEnabled
+	upBtn.Visible = show
+	downBtn.Visible = show
+end))
 
 -- animated border
 track(RunService.Heartbeat:Connect(function(dt)
@@ -451,7 +862,7 @@ local function findPlayer(query)
 end
 
 ---------------------------------------------------------------- !hide (client-side only)
-local hidden = {}      -- [UserId] = true
+local hidden = {}
 local origVolume = setmetatable({}, {__mode = "k"})
 local origDisplay = setmetatable({}, {__mode = "k"})
 
@@ -469,7 +880,6 @@ local function applyHide(plr)
 			elseif d:IsA("BillboardGui") then
 				d.Enabled = false
 			elseif d:IsA("Humanoid") then
-				-- hides the overhead name + health bar
 				if origDisplay[d] == nil then origDisplay[d] = d.DisplayDistanceType end
 				d.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
 			end
@@ -579,9 +989,16 @@ pcall(function() track(LP.Chatted:Connect(runCommand)) end)
 ---------------------------------------------------------------- Cleanup for re-execution
 env.MiniPanelCleanup = function()
 	for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-	if noclipConn then noclipConn:Disconnect() end
-	for p in pairs(touched) do if p.Parent then p.CanCollide = true end end
+	pcall(cancelTeleport)
+	pcall(noclipOff)
+	pcall(stopFly)
 	removeTool()
+	pcall(function() dropTrail(true) end)
+	pcall(function() tpBlur:Destroy() end)
+	pcall(function()
+		local cam = workspace.CurrentCamera
+		if cam and tpBaseFov then cam.FieldOfView = tpBaseFov end
+	end)
 	for id in pairs(hidden) do
 		local plr = Players:GetPlayerByUserId(id)
 		if plr then applyUnhide(plr) end
