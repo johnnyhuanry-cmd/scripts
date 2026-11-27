@@ -1,5 +1,5 @@
 loadstring([==[
--- Headless Hub v3.2  (owner-only nametag access)
+-- Headless Hub v3.3  (emoji chat sync + diagnostics)
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UIS = game:GetService("UserInputService")
@@ -18,7 +18,10 @@ if env.MiniPanelCleanup then pcall(env.MiniPanelCleanup) end
 local conns = {}
 local function track(c) table.insert(conns, c) return c end
 local sendState -- assigned in the sync section
-local NT = {}    -- nametag + marker + owner module (filled in below)
+local NT = {     -- nametag + marker + owner + sync-status module (filled in below)
+	stats = {sent = 0, recv = 0, last = 0, transport = "waiting", selfTag = false},
+	seen = {}, hooked = {}, lastReply = -999,
+}
 
 local LASER_ID = ""            -- optional: your own laser loop, e.g. "rbxassetid://123456789"
 local LASER_RANGE = 450
@@ -1047,78 +1050,104 @@ track(LP.CharacterAdded:Connect(function()
 	if laserEnabled then task.wait(.5) removeLaserTool() giveLaserTool() end
 end))
 
----------------------------------------------------------------- Sync with other hub users (hidden chat packets)
-local Z0, Z1 = "\u{200B}", "\u{200C}"
-local function zwEncode(bits)
+---------------------------------------------------------------- Sync with other hub users (fruit-emoji chat packets)
+-- Each emoji is one hex digit (0-F). Plain emoji pass Roblox's chat filter; script users never see them.
+local EMO = {"🍎", "🍊", "🍋", "🍌", "🍉", "🍇", "🍓", "🍒", "🍐", "🍍", "🍅", "🌽", "🍄", "🌰", "🍞", "🍔"}
+local EMO_REV = {}
+for i, e in ipairs(EMO) do EMO_REV[utf8.codepoint(e)] = i - 1 end
+local function nibEncode(nibs)
 	local out = {}
-	for i, b in ipairs(bits) do out[i] = b == 1 and Z1 or Z0 end
+	for i, v in ipairs(nibs) do out[i] = EMO[v + 1] end
 	return table.concat(out)
 end
-local function encodePacket(fly, laser, hello, yaw, pitch)
-	local bits = {1, 0, 1, 1, 0, 1, fly and 1 or 0, laser and 1 or 0, hello and 1 or 0}
-	local y8 = math.floor(((yaw % (2 * math.pi)) / (2 * math.pi)) * 256) % 256
-	for i = 7, 0, -1 do bits[#bits + 1] = bit32.extract(y8, i) end
-	local p6 = math.clamp(math.floor((pitch + math.pi / 2) / math.pi * 63 + .5), 0, 63)
-	for i = 5, 0, -1 do bits[#bits + 1] = bit32.extract(p6, i) end
-	local par = 0
-	for _, b in ipairs(bits) do par = bit32.bxor(par, b) end
-	bits[#bits + 1] = par
-	return zwEncode(bits)
-end
--- understands two packet kinds: "state" (fly/laser/aim) and "grant" (owner nametag changes)
-local function decodePacket(text)
-	if type(text) ~= "string" or #text < 20 or #text > 700 then return nil end
-	local bits = {}
+local function nibDecode(text)
+	if type(text) ~= "string" or #text < 28 or #text > 1200 then return nil end
+	local nibs = {}
 	local ok = pcall(function()
 		for _, cp in utf8.codes(text) do
-			if cp == 0x200B then bits[#bits + 1] = 0
-			elseif cp == 0x200C then bits[#bits + 1] = 1
-			else bits = nil return end
+			local v = EMO_REV[cp]
+			if v == nil then nibs = nil return end
+			nibs[#nibs + 1] = v
 		end
 	end)
-	if not ok or not bits then return nil end
-	local n = #bits
-	if n < 24 then return nil end
-	local par = 0
-	for i = 1, n - 1 do par = bit32.bxor(par, bits[i]) end
-	if par ~= bits[n] then return nil end
-	local function num(a, b)
+	if not ok or not nibs then return nil end
+	return nibs
+end
+local function nibsInt(v, count)
+	local t = {}
+	for i = count - 1, 0, -1 do t[#t + 1] = math.floor(v / 16 ^ i) % 16 end
+	return t
+end
+local function nibCheck(nibs)
+	local s = 0
+	for i, v in ipairs(nibs) do s += v * ((i % 7) + 1) end
+	return s % 16
+end
+local function nibSeal(nibs)
+	nibs[#nibs + 1] = nibCheck(nibs)
+	return nibEncode(nibs)
+end
+
+local function encodePacket(fly, laser, hello, yaw, pitch)
+	local nibs = {12, 10, (fly and 8 or 0) + (laser and 4 or 0) + (hello and 2 or 0) + 1}
+	local y8 = math.floor(((yaw % (2 * math.pi)) / (2 * math.pi)) * 256) % 256
+	local p6 = math.clamp(math.floor((pitch + math.pi / 2) / math.pi * 63 + .5), 0, 63)
+	for _, v in ipairs(nibsInt(y8, 2)) do nibs[#nibs + 1] = v end
+	for _, v in ipairs(nibsInt(p6, 2)) do nibs[#nibs + 1] = v end
+	return nibSeal(nibs)
+end
+-- two packet kinds: "state" (fly / laser / aim) and "grant" (owner nametag changes)
+local function decodePacket(text)
+	local nibs = nibDecode(text)
+	if not nibs then return nil end
+	local n = #nibs
+	if n < 8 then return nil end
+	local body = {}
+	for i = 1, n - 1 do body[i] = nibs[i] end
+	if nibCheck(body) ~= nibs[n] then return nil end
+	local function int(a, b)
 		local v = 0
-		for i = a, b do v = v * 2 + bits[i] end
+		for i = a, b do v = v * 16 + nibs[i] end
 		return v
 	end
-	local function starts(m)
-		for i = 1, 6 do if bits[i] ~= m[i] then return false end end
-		return true
+	if n == 8 and nibs[1] == 12 and nibs[2] == 10 then
+		local f = nibs[3]
+		return {kind = "state", fly = bit32.band(f, 8) ~= 0, laser = bit32.band(f, 4) ~= 0, hello = bit32.band(f, 2) ~= 0,
+			yaw = int(4, 5) / 256 * 2 * math.pi, pitch = math.min(int(6, 7), 63) / 63 * math.pi - math.pi / 2}
 	end
-	if n == 24 and starts({1, 0, 1, 1, 0, 1}) then
-		return {kind = "state", fly = bits[7] == 1, laser = bits[8] == 1, hello = bits[9] == 1,
-			yaw = num(10, 17) / 256 * 2 * math.pi, pitch = num(18, 23) / 63 * math.pi - math.pi / 2}
-	end
-	if n >= 54 and starts({1, 1, 0, 0, 1, 0}) then
-		local len = num(49, 53)
-		if len > 20 or n ~= 54 + len * 7 then return nil end
-		local uid = 0
-		for i = 9, 48 do uid = uid * 2 + bits[i] end
+	if n >= 16 and nibs[1] == 13 and nibs[2] == 14 then
+		local len = int(14, 15)
+		if len > 20 or n ~= 16 + 2 * len then return nil end
 		local chars = {}
 		for i = 1, len do
-			chars[i] = string.char(math.min(num(54 + (i - 1) * 7, 53 + i * 7) + 32, 126))
+			local a = 16 + 2 * (i - 1)
+			chars[i] = string.char(math.clamp(int(a, a + 1), 32, 126))
 		end
-		return {kind = "grant", op = num(7, 8), uid = uid, name = table.concat(chars)}
+		return {kind = "grant", op = nibs[3], uid = int(4, 13), name = table.concat(chars)}
 	end
 	return nil
 end
 local function chatSend(msg)
+	local st = NT.stats
 	local ok = pcall(function()
 		local ch = TextChatService:FindFirstChild("TextChannels")
 		ch = ch and ch:FindFirstChild("RBXGeneral")
 		assert(ch)
 		ch:SendAsync(msg)
 	end)
-	if not ok then
-		pcall(function()
-			game:GetService("ReplicatedStorage").DefaultChatSystemChatEvents.SayMessageRequest:FireServer(msg, "All")
-		end)
+	if ok then
+		st.sent += 1
+		st.transport = "TextChatService"
+		return
+	end
+	local ok2 = pcall(function()
+		game:GetService("ReplicatedStorage").DefaultChatSystemChatEvents.SayMessageRequest:FireServer(msg, "All")
+	end)
+	if ok2 then
+		st.sent += 1
+		st.transport = "Legacy chat"
+	else
+		st.transport = "no chat found"
 	end
 end
 
@@ -1153,18 +1182,23 @@ local function handlePacket(uid, pkt)
 	local plr = Players:GetPlayerByUserId(uid)
 	if not plr or plr == LP then return end
 	local pr = peers[uid]
-	if not pr then
+	local isNew = pr == nil
+	if isNew then
 		pr = {vel = Vector3.zero, pose = 0, yaw = 0, pitch = 0, yawMsg = 0, pitchMsg = 0}
 		peers[uid] = pr
 		peersChanged()
+		say(ICONS.hub .. " Hub user detected: " .. plr.DisplayName)
 	end
 	if pkt.laser and not pr.laser then pr.yaw, pr.pitch = pkt.yaw, pkt.pitch end
 	pr.flying, pr.laser = pkt.fly, pkt.laser
 	pr.yawMsg, pr.pitchMsg = pkt.yaw, pkt.pitch
-	-- everyone answers a newcomer's hello so each hub user learns who else has the script
-	if pkt.hello then
-		task.delay(rng:NextNumber(.8, 6), function() sendState() end)
-		if NT.onHello then NT.onHello() end
+	-- answer newcomers (and anyone saying hello) so both sides learn about each other
+	if pkt.hello or isNew then
+		if os.clock() - NT.lastReply > 5 then
+			NT.lastReply = os.clock()
+			task.delay(rng:NextNumber(.8, 5), function() sendState() end)
+		end
+		if pkt.hello and NT.onHello then NT.onHello() end
 	end
 end
 
@@ -1244,16 +1278,15 @@ local function peerStep(dt)
 end
 track(RunService.RenderStepped:Connect(peerStep))
 
+-- receive: three paths (hide + decode, channel event, legacy chat). Duplicates are ignored.
 pcall(function()
 	TextChatService.OnIncomingMessage = function(msg)
 		local props = Instance.new("TextChatMessageProperties")
 		local src = msg.TextSource
 		if src then
-			local pkt = decodePacket(msg.Text)
-			if pkt then
+			if NT.ingest and NT.ingest(src.UserId, msg.Text) then
 				props.Text = ""
 				props.PrefixText = ""
-				if src.UserId ~= LP.UserId and NT.route then NT.route(src.UserId, pkt) end
 				return props
 			end
 			if hidden[src.UserId] or (src.UserId == LP.UserId and msg.Text:sub(1, 1) == "!") then props.Text = "" end
@@ -1263,8 +1296,7 @@ pcall(function()
 end)
 local function hookLegacy(plr)
 	track(plr.Chatted:Connect(function(m)
-		local pkt = decodePacket(m)
-		if pkt and plr ~= LP and NT.route then NT.route(plr.UserId, pkt) end
+		if NT.ingest then NT.ingest(plr.UserId, m) end
 	end))
 end
 for _, p in ipairs(Players:GetPlayers()) do hookLegacy(p) end
@@ -1274,9 +1306,10 @@ pcall(function() track(TextChatService.SendingMessage:Connect(function(m) runCom
 pcall(function() track(LP.Chatted:Connect(runCommand)) end)
 
 task.delay(3, function() sendState(true) end)
+task.delay(25, function() if next(peers) == nil then sendState(true) end end)
 task.spawn(function()
 	while gui.Parent do
-		task.wait(20)
+		task.wait(45)
 		if CFG.sync and (flyEnabled or firing) then sendState() end
 	end
 end)
@@ -1297,6 +1330,43 @@ NT.GREY = ColorSequence.new({
 	ColorSequenceKeypoint.new(.8, Color3.fromRGB(232, 232, 238)), ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 255, 255)),
 })
 
+-- ---- incoming packets (called from every receive path)
+function NT.route(uid, pkt)
+	if pkt.kind == "state" then handlePacket(uid, pkt) else NT.handleGrant(uid, pkt) end
+end
+function NT.ingest(uid, text)
+	local pkt = decodePacket(text)
+	if not pkt then return false end
+	if uid == LP.UserId then return true end
+	local key = uid .. ":" .. text
+	local now = os.clock()
+	if NT.seen[key] and now - NT.seen[key] < 3 then return true end
+	NT.seen[key] = now
+	NT.stats.recv += 1
+	NT.stats.last = now
+	pcall(NT.route, uid, pkt)
+	return true
+end
+function NT.hookChannel(ch)
+	if not ch:IsA("TextChannel") or NT.hooked[ch] then return end
+	NT.hooked[ch] = true
+	track(ch.MessageReceived:Connect(function(msg)
+		local src = msg.TextSource
+		if src then NT.ingest(src.UserId, msg.Text) end
+	end))
+end
+task.spawn(function()
+	local tc
+	for _ = 1, 40 do
+		tc = TextChatService:FindFirstChild("TextChannels")
+		if tc then break end
+		task.wait(.5)
+	end
+	if not tc then return end
+	for _, ch in ipairs(tc:GetChildren()) do pcall(NT.hookChannel, ch) end
+	track(tc.ChildAdded:Connect(function(ch) pcall(NT.hookChannel, ch) end))
+end)
+
 -- ---- who has a custom nametag + what it says
 function NT.entry(uid)
 	local g = NT.grants[uid]
@@ -1308,7 +1378,10 @@ function NT.isCustom(plr)
 end
 function NT.tagText(plr)
 	local e = NT.entry(plr.UserId)
-	local nm = (e and e ~= "") and e or (plr.UserId == NT.OWNER and "Tr3y" or plr.DisplayName)
+	if plr.UserId == NT.OWNER then
+		return (e and e ~= "") and e or "Owner"
+	end
+	local nm = (e and e ~= "") and e or plr.DisplayName
 	return "Hub " .. nm
 end
 function NT.changed()
@@ -1350,18 +1423,14 @@ end)
 -- ---- grant packets (only ever accepted when the chat sender is the owner)
 function NT.encodeGrant(op, uid, name)
 	name = name or ""
-	local bits = {1, 1, 0, 0, 1, 0, bit32.extract(op, 1), bit32.extract(op, 0)}
-	for i = 39, 0, -1 do bits[#bits + 1] = math.floor(uid / 2 ^ i) % 2 end
 	local n = math.min(#name, 20)
-	for i = 4, 0, -1 do bits[#bits + 1] = bit32.extract(n, i) end
+	local nibs = {13, 14, op}
+	for _, v in ipairs(nibsInt(uid, 10)) do nibs[#nibs + 1] = v end
+	for _, v in ipairs(nibsInt(n, 2)) do nibs[#nibs + 1] = v end
 	for i = 1, n do
-		local c = name:byte(i) - 32
-		for k = 6, 0, -1 do bits[#bits + 1] = bit32.extract(c, k) end
+		for _, v in ipairs(nibsInt(name:byte(i), 2)) do nibs[#nibs + 1] = v end
 	end
-	local par = 0
-	for _, b in ipairs(bits) do par = bit32.bxor(par, b) end
-	bits[#bits + 1] = par
-	return zwEncode(bits)
+	return nibSeal(nibs)
 end
 function NT.send(op, uid, name)
 	if LP.UserId ~= NT.OWNER or not CFG.sync then return end
@@ -1392,15 +1461,16 @@ function NT.handleGrant(senderId, pkt)
 	NT.save()
 	NT.changed()
 end
-function NT.route(uid, pkt)
-	if pkt.kind == "state" then handlePacket(uid, pkt) else NT.handleGrant(uid, pkt) end
-end
 -- sends one queued packet at a time, never faster than chat allows
 task.spawn(function()
 	while gui.Parent do
 		if CFG.sync and #NT.queue > 0 and not pending and os.clock() - lastSend >= 1.25 then
 			lastSend = os.clock()
 			chatSend(table.remove(NT.queue, 1))
+		end
+		local now = os.clock()
+		for k, t in pairs(NT.seen) do
+			if now - t > 10 then NT.seen[k] = nil end
 		end
 		task.wait(.3)
 	end
@@ -1451,7 +1521,7 @@ function NT.ownerSetName(idText, nameText)
 	NT.save()
 	NT.send(0, uid, name)
 	NT.changed()
-	return true, name == "" and "Successful: back to their display name" or "Successful"
+	return true, name == "" and "Successful: back to the default name" or "Successful"
 end
 function NT.ownerRemove(idText)
 	if LP.UserId ~= NT.OWNER then return false, "Unsuccessful" end
@@ -1556,7 +1626,7 @@ function NT.Tag:update(dt, t, near, dist)
 	local f = (t * .4 + self.phase) % 2.8
 	self.shine.Position = UDim2.fromOffset(-30 + f * 270, 21)
 	if self.custom then
-		-- types "Hub <name>" slowly, holds, deletes it letter by letter, then types it again
+		-- types the tag text slowly, holds, deletes it letter by letter, then types it again
 		local s = self.ts
 		local full = NT.tagText(self.plr)
 		local total = NT.len(full)
@@ -1676,7 +1746,10 @@ function NT.step(dt)
 			NT.destroy(uid)
 			s = nil
 		end
-		if not ok then return end
+		if not ok then
+			if isSelf then NT.stats.selfTag = false end
+			return
+		end
 		if not s then
 			s = {plr = plr, char = char, custom = custom}
 			NT.subjects[uid] = s
@@ -1691,6 +1764,7 @@ function NT.step(dt)
 			s.tag:destroy()
 			s.tag = nil
 		end
+		if isSelf then NT.stats.selfTag = s.tag ~= nil end
 		if CFG.markers and not isSelf and not near then
 			if not s.marker then s.marker = NT.Marker.new(plr, custom) end
 			s.marker:update(dt, t, head.Position, dist, cam)
@@ -1740,7 +1814,7 @@ local function L(parent, text, size, font, color, pos, sz, align)
 		TextXAlignment = align or Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd}, parent)
 end
 L(top, "HEADLESS HUB", 15, Enum.Font.GothamBlack, THEME.text, UDim2.fromOffset(52, 7), UDim2.fromOffset(180, 18))
-L(top, "v3.2  ·  Superman Edition", 10, Enum.Font.GothamMedium, THEME.sub, UDim2.fromOffset(52, 24), UDim2.fromOffset(180, 14))
+L(top, "v3.3  ·  Superman Edition", 10, Enum.Font.GothamMedium, THEME.sub, UDim2.fromOffset(52, 24), UDim2.fromOffset(180, 14))
 
 local hubPill = new("Frame", {Size = UDim2.fromOffset(112, 24), AnchorPoint = Vector2.new(1, .5), Position = UDim2.new(1, -90, .5, 0), BackgroundColor3 = THEME.bg}, top)
 corner(hubPill, 12)
@@ -2082,6 +2156,28 @@ chips(pgSet, ICONS.color .. " Accent color", {
 end)
 slider(pgSet, ICONS.size .. " UI size", .6, 1.4, userScale.Scale, function(v) return math.floor(v * 100 + .5) .. "%" end, function(v) userScale.Scale = v end)
 
+section(pgSet, ICONS.hubusers .. "  SYNC STATUS")
+local syncCard = card(pgSet, 74, true)
+local syncL1 = L(syncCard, "", 13, Enum.Font.GothamBold, THEME.text, UDim2.fromOffset(14, 8), UDim2.new(1, -28, 0, 18))
+local syncL2 = L(syncCard, "", 11, Enum.Font.Gotham, THEME.sub, UDim2.fromOffset(14, 28), UDim2.new(1, -28, 0, 14))
+local syncL3 = L(syncCard, "", 11, Enum.Font.Gotham, THEME.sub, UDim2.fromOffset(14, 46), UDim2.new(1, -28, 0, 14))
+local function refreshSyncStatus()
+	local st, n = NT.stats, 0
+	for _ in pairs(peers) do n += 1 end
+	syncL1.Text = ICONS.hubusers .. " Chat sync: " .. st.transport
+	syncL2.Text = ("Sent %d  ·  Received %d  ·  Hub users seen %d"):format(st.sent, st.recv, n)
+	if st.recv == 0 then
+		syncL3.Text = "Nothing received yet. Needs chat on and someone else running the hub."
+	else
+		syncL3.Text = ("Last packet %ds ago  ·  Your tag: %s"):format(math.floor(os.clock() - st.last), st.selfTag and "showing" or "not showing")
+	end
+end
+refreshSyncStatus()
+button(pgSet, ICONS.net .. "  Resync now (say hello)", function()
+	sendState(true)
+	say("Hello sent. Other hub users will answer")
+end)
+
 section(pgSet, ICONS.tag .. "  NAMETAGS")
 local tagT = toggle(pgSet, ICONS.tag .. " Hub nametags", "Animated tags over hub users (only hub users see them)", function(v) CFG.nametags = v end)
 tagT.silent(true)
@@ -2204,6 +2300,7 @@ peersChanged = function()
 	statusLbl.Text = ICONS.hubusers .. " Hub users seen: " .. n
 	refreshPlayers()
 	refreshOwnerList()
+	refreshSyncStatus()
 end
 
 -- open / close / drag / keys
@@ -2308,7 +2405,7 @@ end
 local upBtn = holdButton("UP", -34, function(v) upHeld = v end)
 local downBtn = holdButton("DOWN", 34, function(v) downHeld = v end)
 
--- heartbeat: border spin, mobile buttons, fps
+-- heartbeat: border spin, mobile buttons, fps, sync status
 local frames, fpsT = 0, 0
 track(RunService.Heartbeat:Connect(function(dt)
 	if isOpen then bodyGrad.Rotation = (bodyGrad.Rotation + dt * 70) % 360 end
@@ -2319,6 +2416,7 @@ track(RunService.Heartbeat:Connect(function(dt)
 	if fpsT >= .5 then
 		fpsLbl.Text = "FPS " .. math.floor(frames / fpsT + .5)
 		frames, fpsT = 0, 0
+		if isOpen then refreshSyncStatus() end
 	end
 end))
 
