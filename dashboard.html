@@ -1,50 +1,215 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Scripts Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scripts | Admin Dashboard</title>
 <style>
-* { box-sizing: border-box; }
+* { box-sizing:border-box; }
 body {
-  margin: 0;
-  padding: 35px 20px;
-  background: #08070d;
-  color: white;
-  font-family: Arial, sans-serif;
+  margin:0;
+  background:#08070d;
+  color:white;
+  font-family:Arial,sans-serif;
+  padding:25px 18px;
 }
-main { max-width: 900px; margin: 60px auto; }
-h1 { font-size: 45px; }
-h1 span { color: #b56aff; }
+header {
+  max-width:1000px;
+  margin:auto;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  padding:15px 0 30px;
+}
+.logo { color:#bd78ff;font-size:25px;font-weight:900; }
+.tag { color:#999;font-size:12px;letter-spacing:2px; }
+main { max-width:1000px;margin:45px auto; }
+h1 { font-size:clamp(35px,7vw,55px);margin-bottom:10px; }
+h1 span { color:#bd78ff; }
+.sub { color:#999;line-height:1.6; }
+.grid {
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+  gap:18px;
+  margin:30px 0;
+}
 .card {
-  background: #15111f;
-  border: 1px solid #58317a;
-  border-radius: 16px;
-  padding: 25px;
-  margin-top: 25px;
-  transition: .3s;
+  background:#15111f;
+  border:1px solid #38234d;
+  border-radius:16px;
+  padding:23px;
+  transition:.25s;
 }
 .card:hover {
-  transform: translateY(-5px);
-  box-shadow: 0 0 25px #a855f755;
+  transform:translateY(-5px);
+  border-color:#bd78ff;
+  box-shadow:0 0 25px #a855f733;
 }
-p { color: #aaa; line-height: 1.6; }
+.card h3 { color:#c58aff;margin-top:0; }
+.number { font-size:30px;font-weight:bold; }
+button {
+  border:0;
+  border-radius:9px;
+  padding:13px 18px;
+  background:#a855f7;
+  color:white;
+  font-weight:bold;
+  cursor:pointer;
+  transition:.2s;
+}
+button:hover { background:#c084fc;transform:translateY(-2px); }
+.secondary { background:#30213e; }
+.key {
+  background:#0d0b13;
+  border:1px solid #302044;
+  padding:15px;
+  border-radius:10px;
+  margin-top:12px;
+  overflow-wrap:anywhere;
+}
+.key small { color:#aaa;display:block;margin-top:8px; }
+.actions { display:flex;gap:8px;margin-top:12px;flex-wrap:wrap; }
+.actions button { padding:9px 12px;font-size:12px; }
+.notice { color:#aaa;font-size:12px;line-height:1.6;margin-top:20px; }
+#message { color:#c58aff;margin-top:12px;font-size:13px; }
 </style>
 </head>
 <body>
+
+<header>
+  <div class="logo">SCRIPTS.</div>
+  <div class="tag">ADMIN PANEL</div>
+</header>
+
 <main>
-  <h1>Scripts <span>Dashboard.</span></h1>
-  <p>Welcome to your Scripts control center.</p>
+  <h1>Control <span>Center.</span></h1>
+  <p class="sub">Your Scripts dashboard and demo key manager.</p>
 
-  <div class="card">
-    <h2>Key Management</h2>
-    <p>Manage access keys for your own software.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>Demo Keys</h3>
+      <div class="number" id="total">0</div>
+    </div>
+    <div class="card">
+      <h3>Active Demos</h3>
+      <div class="number" id="active">0</div>
+    </div>
+    <div class="card">
+      <h3>Expired Demos</h3>
+      <div class="number" id="expired">0</div>
+    </div>
   </div>
 
-  <div class="card">
-    <h2>Key Status</h2>
-    <p>Database connection coming next.</p>
-  </div>
+  <section class="card">
+    <h3>Generate Demo Key</h3>
+    <p class="sub">Create a sample key to preview the dashboard.</p>
+    <button onclick="generateKey()">+ Generate Demo Key</button>
+    <p id="message"></p>
+  </section>
+
+  <section class="card" style="margin-top:22px">
+    <h3>Key Management</h3>
+    <div id="keys">
+      <p class="sub">No demo keys generated yet.</p>
+    </div>
+  </section>
+
+  <p class="notice">
+    DEMO MODE: These sample keys are generated in this browser only.
+    They are not stored in Supabase, do not authenticate software,
+    and are not connected to any Roblox executor.
+  </p>
 </main>
+
+<script>
+let keys = [];
+
+function update() {
+  const now = Date.now();
+  document.getElementById("total").textContent = keys.length;
+  document.getElementById("active").textContent =
+    keys.filter(k => !k.revoked && k.expires > now).length;
+  document.getElementById("expired").textContent =
+    keys.filter(k => k.expires <= now).length;
+
+  const area = document.getElementById("keys");
+
+  if (!keys.length) {
+    area.innerHTML = '<p class="sub">No demo keys generated yet.</p>';
+    return;
+  }
+
+  area.innerHTML = "";
+
+  keys.forEach((k,i) => {
+    const status = k.revoked ? "Revoked" :
+      k.expires <= now ? "Expired" : "Active";
+
+    const item = document.createElement("div");
+    item.className = "key";
+
+    const code = document.createElement("strong");
+    code.textContent = k.value;
+
+    const info = document.createElement("small");
+    info.textContent = status + " • Expires: " +
+      new Date(k.expires).toLocaleString();
+
+    const actions = document.createElement("div");
+    actions.className = "actions";
+
+    const copy = document.createElement("button");
+    copy.className = "secondary";
+    copy.textContent = "Copy";
+    copy.onclick = () => {
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(k.value)
+          .then(() => document.getElementById("message").textContent =
+            "Demo key copied!");
+      } else {
+        document.getElementById("message").textContent =
+          "Clipboard unavailable in this browser.";
+      }
+    };
+
+    const revoke = document.createElement("button");
+    revoke.className = "secondary";
+    revoke.textContent = "Revoke";
+    revoke.disabled = k.revoked;
+    revoke.onclick = () => {
+      k.revoked = true;
+      update();
+    };
+
+    actions.append(copy,revoke);
+    item.append(code,info,actions);
+    area.append(item);
+  });
+}
+
+function generateKey() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let value = "DEMO-";
+
+  for (let i=0;i<20;i++) {
+    value += chars[Math.floor(Math.random()*chars.length)];
+    if (i===9) value += "-";
+  }
+
+  keys.unshift({
+    value,
+    expires:Date.now()+24*60*60*1000,
+    revoked:false
+  });
+
+  document.getElementById("message").textContent =
+    "Demo key generated! Expires in 24 hours.";
+
+  update();
+}
+
+update();
+</script>
 </body>
 </html>
