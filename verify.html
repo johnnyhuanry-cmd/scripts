@@ -160,8 +160,12 @@ button.addEventListener("click", async () => {
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({ key })
-    });
+      const robloxUserId = document.getElementById("robloxUserId").value.trim();
+
+body: JSON.stringify({
+  key,
+  robloxUserId
+})
 
     const data = await response.json();
 
