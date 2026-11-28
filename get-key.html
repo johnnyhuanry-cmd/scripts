@@ -3,88 +3,124 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Scripts | Get Key</title>
 <style>
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
+
 body {
   margin: 0;
   min-height: 100vh;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  background: radial-gradient(circle at top, #202c52, #080b14 65%);
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle at top, #202d58, #080b14 70%);
   color: white;
   font-family: Arial, sans-serif;
 }
+
 .card {
   width: 90%;
-  max-width: 420px;
-  padding: 35px;
+  max-width: 430px;
+  padding: 36px;
   text-align: center;
-  background: rgba(18, 25, 43, .95);
+  background: #111827;
   border: 1px solid #35466f;
   border-radius: 22px;
-  box-shadow: 0 0 45px #466cff22;
+  box-shadow: 0 0 45px #526fff25;
 }
+
 .logo {
-  font-size: 34px;
+  font-size: 32px;
   font-weight: 900;
-  letter-spacing: 3px;
-  background: linear-gradient(90deg,#829aff,#c3a4ff);
-  -webkit-background-clip: text;
-  color: transparent;
+  letter-spacing: 4px;
+  color: #8ca2ff;
 }
-.subtitle {
-  color: #9ba9c7;
-  margin-bottom: 28px;
-}
+
+p { color: #9ba9c7; }
+
 button {
   width: 100%;
   padding: 16px;
-  border: none;
+  margin-top: 20px;
+  border: 0;
   border-radius: 12px;
   background: linear-gradient(90deg,#526fff,#9b65ff);
   color: white;
-  font-weight: bold;
   font-size: 15px;
+  font-weight: bold;
   cursor: pointer;
-  transition: .25s;
 }
-button:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 0 25px #758aff88;
+
+button:disabled {
+  opacity: .6;
+  cursor: wait;
 }
+
 #result {
-  margin-top: 20px;
-  color: #a9baff;
+  margin-top: 22px;
   overflow-wrap: anywhere;
+  color: #b8c5ff;
 }
+
 .small {
-  color: #667795;
+  margin-top: 28px;
   font-size: 12px;
-  margin-top: 25px;
+  color: #667795;
 }
 </style>
 </head>
+
 <body>
 <div class="card">
   <div class="logo">SCRIPTS</div>
-  <h2>Get Your Key</h2>
-  <p class="subtitle">Your personal access key portal.</p>
+  <h2>Get Your Access Key</h2>
+  <p>Verify your Roblox account to receive a personal key.</p>
 
   <button id="getKey">GET KEY</button>
-  <div id="result">Ready when you are.</div>
 
-  <p class="small">Scripts Key System · Secure Access</p>
+  <div id="result">Waiting for account verification.</div>
+
+  <p class="small">Scripts Key System</p>
 </div>
 
 <script>
-document.getElementById("getKey").addEventListener("click", () => {
-  document.getElementById("result").textContent =
-    "Key generation is not connected yet. Backend setup required.";
+const button = document.getElementById("getKey");
+const result = document.getElementById("result");
+
+button.addEventListener("click", async () => {
+  button.disabled = true;
+  result.textContent = "Checking account verification...";
+
+  try {
+    const response = await fetch("/api/get-key", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      result.textContent = data.error ||
+        "Account verification is required.";
+      return;
+    }
+
+    if (!data.success || !data.key) {
+      result.textContent = data.error ||
+        "Could not generate your key.";
+      return;
+    }
+
+    await navigator.clipboard.writeText(data.key);
+    result.textContent = "Your key was generated and copied!";
+  } catch (error) {
+    result.textContent = "Could not contact the key server.";
+  } finally {
+    button.disabled = false;
+  }
 });
 </script>
 </body>
