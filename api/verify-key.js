@@ -5,44 +5,40 @@ export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({
       success: false,
+      valid: false,
       error: "Method not allowed"
     });
   }
 
   const {
     SUPABASE_URL,
-    SUPABASE_SERVICE_ROLE_KEY,
-    GAME_SERVER_SECRET
+    SUPABASE_SERVICE_ROLE_KEY
   } = process.env;
 
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY ||
-      !GAME_SERVER_SECRET) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     return res.status(500).json({
       success: false,
+      valid: false,
       error: "Server configuration missing"
-    });
-  }
-
-  // Authenticate the caller
-  const suppliedSecret = req.headers["x-game-server-secret"];
-
-  if (
-    typeof suppliedSecret !== "string" ||
-    suppliedSecret !== GAME_SERVER_SECRET
-  ) {
-    return res.status(401).json({
-      success: false,
-      error: "Unauthorized"
     });
   }
 
   const key = String(req.body?.key || "").trim();
   const userId = String(req.body?.robloxUserId || "");
 
-  if (!key || !/^[1-9]\d{0,19}$/.test(userId)) {
+  if (!/^SCR-[A-F0-9]{48}$/.test(key)) {
     return res.status(400).json({
       success: false,
-      error: "Invalid key or Roblox UserId"
+      valid: false,
+      error: "Invalid key format"
+    });
+  }
+
+  if (!/^[1-9]\d{0,19}$/.test(userId)) {
+    return res.status(400).json({
+      success: false,
+      valid: false,
+      error: "Invalid Roblox UserId"
     });
   }
 
@@ -50,9 +46,9 @@ export default async function handler(req, res) {
     .update(key)
     .digest("hex");
 
-  const baseUrl = SUPABASE_URL.replace(/\/$/, "");
-
-  const url = new URL(`${baseUrl}/rest/v1/keys`);
+  const url = new URL(
+    `${SUPABASE_URL.replace(/\/$/, "")}/rest/v1/keys`
+  );
 
   url.searchParams.set(
     "select",
@@ -61,13 +57,13 @@ export default async function handler(req, res) {
 
   url.searchParams.set("key_hash", `eq.${keyHash}`);
 
-  const headers = {
-    apikey: SUPABASE_SERVICE_ROLE_KEY,
-    Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
-  };
-
   try {
-    const response = await fetch(url, { headers });
+    const response = await fetch(url, {
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
+      }
+    });
 
     if (!response.ok) {
       throw new Error("Database lookup failed");
@@ -77,7 +73,7 @@ export default async function handler(req, res) {
 
     if (rows.length === 0) {
       return res.status(200).json({
-        success: false,
+        success: true,
         valid: false,
         error: "Key not found"
       });
@@ -85,27 +81,22 @@ export default async function handler(req, res) {
 
     const record = rows[0];
 
-    if (record.status !== "active") {
-      return res.status(200).json({
-        success: false,
-        valid: false,
-        error: "Key revoked"
-      });
-    }
-
-    if (new Date(record.expires_at).getTime() <= Date.now()) {
-      return res.status(200).json({
-        success: false,
-        valid: false,
-        error: "Key expired"
-      });
-    }
-
     if (record.roblox_user_id !== userId) {
       return res.status(200).json({
-        success: false,
+        success: true,
         valid: false,
-        error: "Key belongs to another Roblox account"
+        error: "Key belongs to another account"
+      });
+    }
+
+    if (
+      record.status !== "active" ||
+      new Date(record.expires_at).getTime() <= Date.now()
+    ) {
+      return res.status(200).json({
+        success: true,
+        valid: false,
+        error: "Key expired or revoked"
       });
     }
 
@@ -116,10 +107,11 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
-    console.error("Verify key error:", error);
+    console.error("Verify error:", error);
 
     return res.status(500).json({
       success: false,
+      valid: false,
       error: "Verification failed"
     });
   }
