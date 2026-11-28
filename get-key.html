@@ -2,73 +2,90 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Scripts | Get Key</title>
-  <style>
-    * { box-sizing: border-box; }
-
-    body {
-      margin: 0;
-      min-height: 100vh;
-      display: grid;
-      place-items: center;
-      background: #080a10;
-      color: white;
-      font-family: Arial, sans-serif;
-    }
-
-    .card {
-      width: min(90%, 420px);
-      padding: 35px;
-      border: 1px solid #252b3a;
-      border-radius: 20px;
-      background: #111622;
-      text-align: center;
-      box-shadow: 0 0 40px #0008;
-    }
-
-    h1 { margin-top: 0; }
-
-    p { color: #9ca8bd; }
-
-    button {
-      width: 100%;
-      padding: 15px;
-      margin-top: 18px;
-      border: 0;
-      border-radius: 10px;
-      background: #6575ff;
-      color: white;
-      font-size: 16px;
-      font-weight: bold;
-      cursor: pointer;
-    }
-
-    button:hover { background: #8290ff; }
-
-    #result {
-      margin-top: 18px;
-      overflow-wrap: anywhere;
-      color: #aab7ff;
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scripts | Get Key</title>
+<style>
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: radial-gradient(circle at top, #202c52, #080b14 65%);
+  color: white;
+  font-family: Arial, sans-serif;
+}
+.card {
+  width: 90%;
+  max-width: 420px;
+  padding: 35px;
+  text-align: center;
+  background: rgba(18, 25, 43, .95);
+  border: 1px solid #35466f;
+  border-radius: 22px;
+  box-shadow: 0 0 45px #466cff22;
+}
+.logo {
+  font-size: 34px;
+  font-weight: 900;
+  letter-spacing: 3px;
+  background: linear-gradient(90deg,#829aff,#c3a4ff);
+  -webkit-background-clip: text;
+  color: transparent;
+}
+.subtitle {
+  color: #9ba9c7;
+  margin-bottom: 28px;
+}
+button {
+  width: 100%;
+  padding: 16px;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(90deg,#526fff,#9b65ff);
+  color: white;
+  font-weight: bold;
+  font-size: 15px;
+  cursor: pointer;
+  transition: .25s;
+}
+button:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 0 25px #758aff88;
+}
+#result {
+  margin-top: 20px;
+  color: #a9baff;
+  overflow-wrap: anywhere;
+}
+.small {
+  color: #667795;
+  font-size: 12px;
+  margin-top: 25px;
+}
+</style>
 </head>
 <body>
-  <main class="card">
-    <h1>Scripts</h1>
-    <p>Get your personal access key.</p>
+<div class="card">
+  <div class="logo">SCRIPTS</div>
+  <h2>Get Your Key</h2>
+  <p class="subtitle">Your personal access key portal.</p>
 
-    <button id="getKey">GET KEY</button>
+  <button id="getKey">GET KEY</button>
+  <div id="result">Ready when you are.</div>
 
-    <div id="result"></div>
-  </main>
+  <p class="small">Scripts Key System · Secure Access</p>
+</div>
 
-  <script>
-    document.getElementById("getKey").addEventListener("click", () => {
-      document.getElementById("result").textContent =
-        "Account verification is not connected yet.";
-    });
-  </script>
+<script>
+document.getElementById("getKey").addEventListener("click", () => {
+  document.getElementById("result").textContent =
+    "Key generation is not connected yet. Backend setup required.";
+});
+</script>
 </body>
 </html>
