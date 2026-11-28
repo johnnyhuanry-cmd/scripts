@@ -7,9 +7,7 @@
 <title>SCRIPTS | Verify Key</title>
 
 <style>
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
 body {
   margin: 0;
@@ -17,9 +15,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background:
-    radial-gradient(circle at 50% 15%, #18265a, transparent 45%),
-    #070912;
+  background: radial-gradient(circle at 50% 15%, #18265a, transparent 45%), #070912;
   color: white;
   font-family: Arial, sans-serif;
 }
@@ -58,6 +54,7 @@ body {
 input {
   width: 100%;
   padding: 15px;
+  margin-bottom: 13px;
   border-radius: 11px;
   border: 1px solid #354b83;
   background: #090e1e;
@@ -75,7 +72,7 @@ input:focus {
 button {
   width: 100%;
   padding: 16px;
-  margin-top: 17px;
+  margin-top: 5px;
   border: none;
   border-radius: 11px;
   color: white;
@@ -123,16 +120,23 @@ button:disabled {
     Check the status of your access key.
   </p>
 
-<input
-  id="robloxUserId"
-  type="text"
-  placeholder="Your Roblox UserId"
-  autocomplete="off"
->
+  <input
+    id="key"
+    type="text"
+    placeholder="SCR-ENTER-YOUR-KEY"
+    autocomplete="off"
+  >
+
+  <input
+    id="robloxUserId"
+    type="text"
+    placeholder="Your Roblox UserId"
+    autocomplete="off"
+  >
 
   <button id="verify">VERIFY KEY</button>
 
-  <div id="result">Waiting for your key...</div>
+  <div id="result">Waiting for your information...</div>
 
   <div class="footer">SCRIPTS KEY SYSTEM</div>
 </div>
@@ -140,13 +144,15 @@ button:disabled {
 <script>
 const button = document.getElementById("verify");
 const result = document.getElementById("result");
-const input = document.getElementById("key");
+const keyInput = document.getElementById("key");
+const userIdInput = document.getElementById("robloxUserId");
 
 button.addEventListener("click", async () => {
-  const key = input.value.trim();
+  const key = keyInput.value.trim();
+  const robloxUserId = userIdInput.value.trim();
 
-  if (!key) {
-    result.textContent = "Please enter a key.";
+  if (!key || !robloxUserId) {
+    result.textContent = "Enter both your key and Roblox UserId.";
     return;
   }
 
@@ -160,12 +166,11 @@ button.addEventListener("click", async () => {
       headers: {
         "Content-Type": "application/json"
       },
-      const robloxUserId = document.getElementById("robloxUserId").value.trim();
-
-body: JSON.stringify({
-  key,
-  robloxUserId
-})
+      body: JSON.stringify({
+        key,
+        robloxUserId
+      })
+    });
 
     const data = await response.json();
 
@@ -174,9 +179,9 @@ body: JSON.stringify({
         "✓ KEY VALID — Expires: " +
         new Date(data.expiresAt).toLocaleDateString();
     } else {
-      result.textContent =
-        data.error || "Key is invalid.";
+      result.textContent = data.error || "Key is invalid.";
     }
+
   } catch (error) {
     result.textContent = "Could not contact verification server.";
   } finally {
